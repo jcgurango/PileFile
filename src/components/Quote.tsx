@@ -1,6 +1,6 @@
 import { CornerUpLeft, X } from 'lucide-react'
 import type { Message } from '../db'
-import { formatFull, formatTimestamp, plainText } from '../format'
+import { formatFull, formatTimestamp, messagePreview } from '../format'
 import IconButton from './IconButton'
 
 interface Props {
@@ -16,7 +16,7 @@ interface Props {
 export default function Quote({ message, onOpen, onCancel }: Props) {
   const body = message ? (
     <>
-      <span className="quote-text">{plainText(message.text) || '(empty message)'}</span>
+      <span className="quote-text">{messagePreview(message.text, message.attachmentCount)}</span>
       <time className="quote-time" title={formatFull(message.createdAt)}>
         {formatTimestamp(message.createdAt)}
       </time>

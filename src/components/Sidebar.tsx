@@ -14,7 +14,7 @@ import {
   type Stream,
 } from '../db'
 import { ChevronDown, ChevronRight, Hash, Inbox, Layers, Plus, Search as SearchIcon, X } from 'lucide-react'
-import { formatFull, formatTimestamp, snippet } from '../format'
+import { formatFull, formatTimestamp, messagePreview, snippet } from '../format'
 import Highlighted from './Highlighted'
 import IconButton from './IconButton'
 import TagMenu from './TagMenu'
@@ -356,7 +356,10 @@ function SearchResultsList({ query, streams, onSelect }: SearchProps) {
               onClick={() => onSelect(m.streamId ?? ALL_ID, m.id)}
             >
               <span className="result-text">
-                <Highlighted text={snippet(m.text, highlights)} terms={highlights} />
+                <Highlighted
+                  text={m.text ? snippet(m.text, highlights) : messagePreview('', m.attachmentCount)}
+                  terms={highlights}
+                />
               </span>
               <span className="result-meta">
                 <time title={formatFull(m.createdAt)}>{formatTimestamp(m.createdAt)}</time> · {where}

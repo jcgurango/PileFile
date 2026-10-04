@@ -10,6 +10,7 @@ import {
   unpinMessage,
   versionsOf,
   viewName,
+  type Attachment,
   type Message,
   type Pin,
   type Stream,
@@ -31,6 +32,7 @@ import {
 import { autosize } from '../autosize'
 import { useIsTouch } from '../useMediaQuery'
 import type { Focus } from '../App'
+import AttachmentList from './AttachmentList'
 import Clamp from './Clamp'
 import IconButton from './IconButton'
 import MessageBody from './MessageBody'
@@ -53,6 +55,7 @@ interface Props {
   focus: Focus | null
   /** The replied-to message: a Message, null when it was deleted, undefined when this is not a reply. */
   replyTarget?: Message | null
+  attachments: Attachment[]
   onOpenStream: (streamId: string) => void
   onTagClick: (tag: string) => void
   onReply: (message: Message) => void
@@ -67,6 +70,7 @@ export default function MessageCard({
   terms = [],
   focus,
   replyTarget,
+  attachments,
   onOpenStream,
   onTagClick,
   onReply,
@@ -129,7 +133,7 @@ export default function MessageCard({
 
   const save = async () => {
     const text = draft.trim()
-    if (text) await editMessage(message.id, text)
+    if (text || message.attachmentCount > 0) await editMessage(message.id, text)
     setPanel('none')
   }
 
@@ -158,6 +162,7 @@ export default function MessageCard({
   return (
     <article
       ref={cardRef}
+      data-id={message.id}
       className={`msg${pins.length ? ' pinned' : ''}${message.unread ? ' unread' : ''}${showingOld ? ' viewing-old' : ''}`}
     >
       {message.replyToId && (
@@ -187,22 +192,25 @@ export default function MessageCard({
               align="end"
               className="send-btn"
               onClick={save}
-              disabled={!draft.trim()}
+              disabled={!draft.trim() && message.attachmentCount === 0}
             />
           </div>
         </div>
       ) : (
-        <div className="msg-text">
-          <Clamp>
-            <MessageBody
-              text={viewing ? viewing.text : message.text}
-              terms={terms}
-              onChange={showingOld ? undefined : (next) => editMessage(message.id, next)}
-              onTagClick={onTagClick}
-            />
-          </Clamp>
-        </div>
+        (viewing ? viewing.text : message.text).length > 0 && (
+          <div className="msg-text">
+            <Clamp>
+              <MessageBody
+                text={viewing ? viewing.text : message.text}
+                terms={terms}
+                onChange={showingOld ? undefined : (next) => editMessage(message.id, next)}
+                onTagClick={onTagClick}
+              />
+            </Clamp>
+          </div>
+        )
       )}
+      <AttachmentList items={attachments} />
 
       <footer className="msg-foot">
         <span className="msg-meta">

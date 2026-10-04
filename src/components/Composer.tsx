@@ -1,9 +1,11 @@
-import { useEffect, useRef, type KeyboardEvent } from 'react'
-import { SendHorizontal } from 'lucide-react'
+import { useEffect, useRef, type ClipboardEvent, type KeyboardEvent } from 'react'
+import { Paperclip, SendHorizontal } from 'lucide-react'
 import { autosize } from '../autosize'
 import type { Message } from '../db'
+import { useFileDrop } from '../useFileDrop'
 import { useIsTouch } from '../useMediaQuery'
 import IconButton from './IconButton'
+import PendingAttachments from './PendingAttachments'
 import Quote from './Quote'
 
 interface Props {
@@ -11,7 +13,10 @@ interface Props {
   target: string
   value: string
   onChange: (text: string) => void
-  onSubmit: (text: string) => Promise<unknown>
+  onSubmit: (text: string, files: File[]) => Promise<unknown>
+  /** Files queued for the next message. */
+  files: File[]
+  onFilesChange: (files: File[]) => void
   /** The message being replied to, shown as a quote above the box. */
   replyTo?: Message | null
   onCancelReply?: () => void
@@ -23,11 +28,17 @@ export default function Composer({
   value,
   onChange,
   onSubmit,
+  files,
+  onFilesChange,
   replyTo,
   onCancelReply,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
   const touch = useIsTouch()
+  const addFiles = (more: File[]) => onFilesChange([...files, ...more])
+  const drop = useFileDrop(addFiles)
+  const canSend = value.trim().length > 0 || files.length > 0
 
   // Grow with content; there is no cap, the pane scrolls if a draft gets very tall.
   useEffect(() => autosize(ref.current), [value])
@@ -45,10 +56,18 @@ export default function Composer({
 
   const submit = async () => {
     const text = value.trim()
-    if (!text) return
-    await onSubmit(text)
+    if (!text && files.length === 0) return
+    await onSubmit(text, files)
     onChange('')
+    onFilesChange([])
     ref.current?.focus()
+  }
+
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = Array.from(e.clipboardData.files)
+    if (pasted.length === 0) return
+    e.preventDefault()
+    addFiles(pasted)
   }
 
   // Desktop: Enter saves, Shift+Enter breaks the line. Touch: Enter always breaks the line.
@@ -61,7 +80,7 @@ export default function Composer({
   }
 
   return (
-    <div className="composer">
+    <div className={`composer${drop.over ? ' drop-over' : ''}`} {...drop.handlers}>
       {replyTo && <Quote message={replyTo} onCancel={onCancelReply} />}
       <textarea
         ref={ref}
@@ -71,8 +90,28 @@ export default function Composer({
         aria-label={`Write to ${target}`}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
       />
+      <PendingAttachments files={files} onRemove={(i) => onFilesChange(files.filter((_, j) => j !== i))} />
       <div className="composer-foot">
+        <input
+          ref={fileInput}
+          type="file"
+          multiple
+          hidden
+          aria-label="Choose files to attach"
+          onChange={(e) => {
+            addFiles(Array.from(e.target.files ?? []))
+            e.target.value = ''
+          }}
+        />
+        <IconButton
+          icon={Paperclip}
+          label="Attach files"
+          hint="Attach files (or drop / paste them)"
+          size={18}
+          onClick={() => fileInput.current?.click()}
+        />
         <span className="hint">
           {touch ? 'Markdown supported' : 'Enter to save · Shift+Enter for a new line · Markdown supported'}
         </span>
@@ -84,9 +123,10 @@ export default function Composer({
           align="end"
           className="send-btn"
           onClick={submit}
-          disabled={!value.trim()}
+          disabled={!canSend}
         />
       </div>
+      {drop.over && <div className="drop-hint">Drop to attach</div>}
     </div>
   )
 }

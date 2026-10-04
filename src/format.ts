@@ -60,3 +60,11 @@ export function plainText(markdown: string): string {
     .replace(/\s+/g, ' ')
     .trim()
 }
+
+/** One-line preview of a message: its text, or a note about its attachments when there is no text. */
+export function messagePreview(text: string, attachmentCount: number): string {
+  const t = plainText(text)
+  if (t) return t
+  if (attachmentCount > 0) return `${attachmentCount} ${attachmentCount === 1 ? 'attachment' : 'attachments'}`
+  return '(empty message)'
+}

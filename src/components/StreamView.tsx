@@ -74,6 +74,9 @@ export default function StreamView({
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const draft = drafts[streamId] ?? ''
   const setDraft = (text: string) => setDrafts((d) => ({ ...d, [streamId]: text }))
+  const [pendingFiles, setPendingFiles] = useState<Record<string, File[]>>({})
+  const files = pendingFiles[streamId] ?? []
+  const setFiles = (list: File[]) => setPendingFiles((p) => ({ ...p, [streamId]: list }))
   const [replies, setReplies] = useState<Record<string, Message>>({})
   const replyTo = replies[streamId] ?? null
   const setReplyTo = (m: Message | null) =>
@@ -84,8 +87,8 @@ export default function StreamView({
       return next
     })
 
-  const submit = async (text: string) => {
-    await addMessage(text, streamId, replyTo?.id ?? null)
+  const submit = async (text: string, attach: File[]) => {
+    await addMessage(text, streamId, replyTo?.id ?? null, attach)
     setReplyTo(null)
   }
 
@@ -323,6 +326,8 @@ export default function StreamView({
           value={draft}
           onChange={setDraft}
           onSubmit={submit}
+          files={files}
+          onFilesChange={setFiles}
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(null)}
         />
@@ -368,6 +373,7 @@ export default function StreamView({
             terms={filtering ? parsed.highlights : undefined}
             focus={focus?.messageId === m.id ? focus : null}
             replyTarget={m.replyToId ? (view?.replyTargets.get(m.replyToId) ?? null) : undefined}
+            attachments={view?.attachmentsByMessage.get(m.id) ?? []}
             onOpenStream={onOpenStream}
             onTagClick={onTagClick}
             onReply={setReplyTo}

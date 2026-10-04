@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie'
 import { extractTags, parseQuery, type ParsedQuery } from './tags'
+import { kindOf, makeThumbnail } from './attachments'
 
 /**
  * Two virtual views sit above the streams. IndexedDB keys cannot be null, so these
@@ -39,6 +40,35 @@ export interface Message {
   versionCount: number
   /** Backlink to the message this one replies to. Kept even if that message is later deleted. */
   replyToId: string | null
+  /** Denormalized so lists and quotes can say "3 attachments" without a lookup. */
+  attachmentCount: number
+}
+
+/**
+ * Attachment metadata. The bytes live in `files`, a lazily built preview in `thumbs`.
+ * Attachments are fixed when a message is created; they are not edited or versioned.
+ */
+export interface Attachment {
+  id: string
+  messageId: string
+  name: string
+  type: string
+  size: number
+  createdAt: number
+  /** Position within the message, in the order files were added. */
+  order: number
+}
+
+interface FileRow {
+  id: string
+  blob: Blob
+}
+
+interface ThumbRow {
+  id: string
+  blob: Blob
+  width: number
+  height: number
 }
 
 /** One row per tag ever written, keeping the casing it was first written with. */
@@ -71,17 +101,23 @@ class PileFileDB extends Dexie {
   versions!: EntityTable<Version, 'id'>
   pins!: Dexie.Table<Pin, [string, string]>
   tags!: EntityTable<Tag, 'name'>
+  attachments!: EntityTable<Attachment, 'id'>
+  files!: EntityTable<FileRow, 'id'>
+  thumbs!: EntityTable<ThumbRow, 'id'>
 
   constructor() {
     super('pilefile')
     // Pre-stable: a schema change bumps this number and wipes local data instead of migrating.
-    this.version(7)
+    this.version(9)
       .stores({
         streams: 'id, name, createdAt, parentId',
         messages: 'id, createdAt, updatedAt, streamId, replyToId, unread, *words, *tags',
         versions: 'id, messageId',
         pins: '[messageId+streamId], messageId, streamId',
         tags: 'name',
+        attachments: 'id, messageId',
+        files: 'id',
+        thumbs: 'id',
       })
       .upgrade((tx) => Promise.all(tx.storeNames.map((name) => tx.table(name).clear())))
   }
@@ -211,14 +247,22 @@ async function indexTags(text: string): Promise<string[]> {
   return refs.map((r) => r.name)
 }
 
+/** Search words come from the text and from attachment file names. */
+const wordsFor = (text: string, names: string[]) => tokenize([text, ...names].join(' '))
+
+async function attachmentNames(messageId: string): Promise<string[]> {
+  return (await db.attachments.where('messageId').equals(messageId).toArray()).map((a) => a.name)
+}
+
 export async function addMessage(
   text: string,
   streamId: string,
   replyToId: string | null = null,
+  files: File[] = [],
 ): Promise<string> {
   const id = uid()
   const now = Date.now()
-  await db.transaction('rw', db.messages, db.versions, db.tags, async () => {
+  await db.transaction('rw', db.messages, db.versions, db.tags, db.attachments, db.files, async () => {
     await db.messages.add({
       id,
       text,
@@ -226,26 +270,47 @@ export async function addMessage(
       updatedAt: now,
       streamId: isVirtual(streamId) ? null : streamId,
       unread: 1,
-      words: tokenize(text),
+      words: wordsFor(
+        text,
+        files.map((f) => f.name),
+      ),
       tags: await indexTags(text),
       versionCount: 1,
       replyToId,
+      attachmentCount: files.length,
     })
     await db.versions.add({ id: uid(), messageId: id, text, createdAt: now })
+    await storeFiles(id, files, now, 0)
   })
   return id
+}
+
+async function storeFiles(messageId: string, files: File[], now: number, firstOrder: number): Promise<void> {
+  for (const [i, f] of files.entries()) {
+    const attId = uid()
+    await db.attachments.add({
+      id: attId,
+      messageId,
+      name: f.name,
+      type: f.type || 'application/octet-stream',
+      size: f.size,
+      createdAt: now,
+      order: firstOrder + i,
+    })
+    await db.files.add({ id: attId, blob: f })
+  }
 }
 
 /** Records a new version. The message keeps its original createdAt so ordering is stable. */
 export async function editMessage(id: string, text: string): Promise<void> {
   const now = Date.now()
-  await db.transaction('rw', db.messages, db.versions, db.tags, async () => {
+  await db.transaction('rw', db.messages, db.versions, db.tags, db.attachments, async () => {
     const m = await db.messages.get(id)
     if (!m || m.text === text) return
     await db.versions.add({ id: uid(), messageId: id, text, createdAt: now })
     await db.messages.update(id, {
       text,
-      words: tokenize(text),
+      words: wordsFor(text, await attachmentNames(id)),
       tags: await indexTags(text),
       updatedAt: now,
       versionCount: m.versionCount + 1,
@@ -275,11 +340,50 @@ export async function moveMessage(id: string, streamId: string | null): Promise<
 }
 
 export async function deleteMessage(id: string): Promise<void> {
-  await db.transaction('rw', db.messages, db.versions, db.pins, async () => {
-    await db.versions.where('messageId').equals(id).delete()
-    await db.pins.where('messageId').equals(id).delete()
-    await db.messages.delete(id)
-  })
+  await db.transaction(
+    'rw',
+    [db.messages, db.versions, db.pins, db.attachments, db.files, db.thumbs],
+    async () => {
+      const attIds = await db.attachments.where('messageId').equals(id).primaryKeys()
+      await db.files.bulkDelete(attIds)
+      await db.thumbs.bulkDelete(attIds)
+      await db.attachments.bulkDelete(attIds)
+      await db.versions.where('messageId').equals(id).delete()
+      await db.pins.where('messageId').equals(id).delete()
+      await db.messages.delete(id)
+    },
+  )
+}
+
+// ------------------------------------------------------------ attachments
+
+export async function getFileBlob(attachmentId: string): Promise<Blob | undefined> {
+  return (await db.files.get(attachmentId))?.blob
+}
+
+/** Pending thumbnail work, so two tiles for the same file share one generation. */
+const thumbJobs = new Map<string, Promise<Blob | null>>()
+
+/** The stored thumbnail for an image or video, generated on first request. Null when undecodable. */
+export function getThumbBlob(att: Attachment): Promise<Blob | null> {
+  const kind = kindOf(att.type)
+  if (kind !== 'image' && kind !== 'video') return Promise.resolve(null)
+  let job = thumbJobs.get(att.id)
+  if (!job) {
+    job = (async () => {
+      const cached = await db.thumbs.get(att.id)
+      if (cached) return cached.blob
+      const file = await db.files.get(att.id)
+      if (!file) return null
+      const made = await makeThumbnail(file.blob, kind)
+      if (!made) return null
+      await db.thumbs.put({ id: att.id, blob: made.blob, width: made.width, height: made.height })
+      return made.blob
+    })()
+    thumbJobs.set(att.id, job)
+    job.catch(() => thumbJobs.delete(att.id))
+  }
+  return job
 }
 
 // ------------------------------------------------------------- read state
@@ -317,6 +421,8 @@ export interface StreamViewData {
   pinsByMessage: Map<string, Pin[]>
   /** Messages that listed messages reply to, keyed by id. A missing key means the original was deleted. */
   replyTargets: Map<string, Message>
+  /** Attachments of listed messages, keyed by message id, in upload order. */
+  attachmentsByMessage: Map<string, Attachment[]>
 }
 
 /**
@@ -354,7 +460,18 @@ export async function loadStreamView(streamId: string, streams: Stream[]): Promi
   const replyTargets = new Map<string, Message>()
   for (const t of targets) if (t) replyTargets.set(t.id, t)
 
-  return { messages, pinsByMessage, replyTargets }
+  const withFiles = messages.filter((m) => m.attachmentCount > 0).map((m) => m.id)
+  const atts = withFiles.length
+    ? (await db.attachments.where('messageId').anyOf(withFiles).toArray()).sort((a, b) => a.order - b.order)
+    : []
+  const attachmentsByMessage = new Map<string, Attachment[]>()
+  for (const a of atts) {
+    const list = attachmentsByMessage.get(a.messageId)
+    if (list) list.push(a)
+    else attachmentsByMessage.set(a.messageId, [a])
+  }
+
+  return { messages, pinsByMessage, replyTargets, attachmentsByMessage }
 }
 
 export function versionsOf(messageId: string): Promise<Version[]> {
