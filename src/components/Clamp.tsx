@@ -1,15 +1,21 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 
+interface Props {
+  children: ReactNode
+  /** Owned by the parent so the choice survives the content being swapped out, e.g. while editing. */
+  expanded: boolean
+  onExpandedChange: (expanded: boolean) => void
+}
+
 /**
  * Caps content at the shared --clamp-h height. When the content is taller, it is clipped
  * with a fade and a Show more / Show less toggle appears.
  */
-export default function Clamp({ children }: { children: ReactNode }) {
+export default function Clamp({ children, expanded, onExpandedChange }: Props) {
   const boxRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   const [overflowing, setOverflowing] = useState(false)
-  const [expanded, setExpanded] = useState(false)
 
   useEffect(() => {
     const box = boxRef.current
@@ -26,7 +32,7 @@ export default function Clamp({ children }: { children: ReactNode }) {
   }, [])
 
   const toggle = () => {
-    setExpanded((e) => !e)
+    onExpandedChange(!expanded)
     if (expanded) boxRef.current?.scrollIntoView({ block: 'nearest' })
   }
 

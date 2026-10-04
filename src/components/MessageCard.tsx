@@ -78,6 +78,7 @@ export default function MessageCard({
 }: Props) {
   const [panel, setPanel] = useState<Panel>('none')
   const [draft, setDraft] = useState(message.text)
+  const [expanded, setExpanded] = useState(false)
   // Version browsing: index into the newest-first version list; 0 is the current text.
   const [viewIdx, setViewIdx] = useState(0)
   const [calendarOpen, setCalendarOpen] = useState(false)
@@ -199,7 +200,7 @@ export default function MessageCard({
       ) : (
         (viewing ? viewing.text : message.text).length > 0 && (
           <div className="msg-text">
-            <Clamp>
+            <Clamp expanded={expanded} onExpandedChange={setExpanded}>
               <MessageBody
                 text={viewing ? viewing.text : message.text}
                 terms={terms}
