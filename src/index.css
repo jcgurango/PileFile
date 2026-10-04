@@ -1307,25 +1307,19 @@ button.quote-body:hover .quote-text {
   margin-top: 0.15em;
 }
 
-/* Task lists drop the bullet, so the list itself drops its bullet gutter.
-   Nested task lists indent by one level, like any other nested list. */
-.md ul.contains-task-list {
-  padding-left: 0;
+/* Task items keep the normal list gutter and put the checkbox where the bullet would be.
+   Nesting then indents like any other list, and loose items (wrapped in <p>) stay on one line. */
+.md li.task-list-item {
+  position: relative;
   list-style: none;
 }
 
-/* A plain item in a list that also holds tasks keeps a bullet, drawn inline so it lines up. */
-.md ul.contains-task-list > li:not(.task-list-item) {
-  list-style: disc inside;
-}
-
-.md li .contains-task-list {
-  padding-left: 1.5em;
-}
-
-.md li.task-list-item input {
-  margin: 0 0.45em 0 0;
-  vertical-align: -1px;
+.md li.task-list-item > input[type='checkbox'],
+.md li.task-list-item > p:first-child > input[type='checkbox'] {
+  position: absolute;
+  top: 0.3em;
+  left: -1.35em;
+  margin: 0;
   accent-color: var(--accent);
 }
 
