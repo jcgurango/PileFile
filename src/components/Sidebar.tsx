@@ -15,6 +15,7 @@ import {
 } from '../db'
 import { ChevronDown, ChevronRight, Hash, Inbox, Layers, Plus, Search as SearchIcon, X } from 'lucide-react'
 import { formatFull, formatTimestamp, messagePreview, snippet } from '../format'
+import AccountPanel from './AccountPanel'
 import Highlighted from './Highlighted'
 import IconButton from './IconButton'
 import TagMenu from './TagMenu'
@@ -139,6 +140,7 @@ export default function Sidebar({
             onSelect={select}
           />
         )}
+        <AccountPanel />
       </aside>
       {open && <div className="scrim" onClick={onClose} />}
     </>

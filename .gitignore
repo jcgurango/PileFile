@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# PileFile server state
+data/
+.env
+dev-dist/
+e2e/.shots/

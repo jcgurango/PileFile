@@ -48,9 +48,13 @@ export default function AttachmentList({ items }: Props) {
 
 // ---------------------------------------------------------------- helpers
 
+/** Delays between attempts when an attachment's bytes have not arrived from the server yet. */
+const MISSING_RETRY_MS = [1500, 3000, 6000, 12000, 24000, 48000]
+
 /**
  * Object URL for an attachment's thumbnail: undefined while loading, null when none can be made.
  * Keyed by id and type (not the row object), so live-query refreshes do not revoke a URL in use.
+ * Bytes that are still uploading from another device are retried with backoff while mounted.
  */
 function useThumbUrl(att: Attachment): string | null | undefined {
   const { id, messageId, name, type, size, createdAt, order } = att
@@ -58,13 +62,24 @@ function useThumbUrl(att: Attachment): string | null | undefined {
   useEffect(() => {
     let alive = true
     let created: string | null = null
-    getThumbBlob({ id, messageId, name, type, size, createdAt, order }).then((blob) => {
-      if (!alive) return
-      created = blob ? URL.createObjectURL(blob) : null
-      setLoaded({ id, url: created })
-    })
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let attempt = 0
+    const run = () => {
+      getThumbBlob({ id, messageId, name, type, size, createdAt, order }).then((result) => {
+        if (!alive) return
+        if (result === 'missing') {
+          const delay = MISSING_RETRY_MS[Math.min(attempt++, MISSING_RETRY_MS.length - 1)]
+          timer = setTimeout(run, delay)
+          return
+        }
+        created = result ? URL.createObjectURL(result) : null
+        setLoaded({ id, url: created })
+      })
+    }
+    run()
     return () => {
       alive = false
+      if (timer) clearTimeout(timer)
       if (created) URL.revokeObjectURL(created)
     }
     // Only the identity and media type matter for the thumbnail.

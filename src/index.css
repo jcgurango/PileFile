@@ -1505,6 +1505,162 @@ button.quote-body:hover .quote-text {
   margin: 4px 8px;
 }
 
+/* ------------------------------------------------------- account + sync */
+
+.account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.account-login {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.account-note {
+  flex: 1 1 100%;
+}
+
+.account-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.account-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.account-status {
+  display: inline-flex;
+  flex: 1 1 100%;
+  align-items: center;
+  gap: 6px;
+  order: 3;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3cb371;
+}
+
+.account-status.busy .status-dot {
+  background: #e0a800;
+}
+
+.account-status.warn {
+  color: var(--danger);
+}
+
+.account-status.warn .status-dot {
+  background: var(--danger);
+}
+
+.account-error {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--danger);
+}
+
+.login-dialog {
+  width: min(380px, 92vw);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.login-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+}
+
+.login-form h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.login-form p {
+  margin: 0;
+}
+
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.login-form input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  outline: none;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.login-form input:focus {
+  border-color: var(--accent);
+}
+
+.login-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.primary-btn {
+  padding: 7px 14px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.primary-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ------------------------------------------------- icon buttons + tooltips */
 
 .ibtn {

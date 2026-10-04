@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable } from 'dexie'
 import { extractTags, parseQuery, type ParsedQuery } from './tags'
 import { kindOf, makeThumbnail } from './attachments'
+import type { Action, ActionBody } from '../shared/protocol'
 
 /**
  * Two virtual views sit above the streams. IndexedDB keys cannot be null, so these
@@ -18,6 +19,8 @@ export interface Stream {
   id: string
   name: string
   createdAt: number
+  /** Bumped on rename or move; the server keeps the newest. */
+  updatedAt: number
   /** null for a top-level stream. */
   parentId: string | null
 }
@@ -77,6 +80,21 @@ export interface Tag {
   display: string
 }
 
+/**
+ * Work waiting to reach the server, in order. An `action` is a protocol mutation;
+ * an `upload` sends the bytes of an attachment whose metadata already went up.
+ */
+export type OutboxItem = { seq?: number } & (
+  | { kind: 'action'; action: Action }
+  | { kind: 'upload'; attachmentId: string }
+)
+
+/** Small key-value store: signed-in user, last applied change seq per account. */
+export interface MetaRow {
+  key: string
+  value: unknown
+}
+
 export interface Version {
   id: string
   messageId: string
@@ -104,10 +122,12 @@ class PileFileDB extends Dexie {
   attachments!: EntityTable<Attachment, 'id'>
   files!: EntityTable<FileRow, 'id'>
   thumbs!: EntityTable<ThumbRow, 'id'>
+  outbox!: Dexie.Table<OutboxItem, number>
+  meta!: EntityTable<MetaRow, 'key'>
 
   constructor() {
     super('pilefile')
-    // Pre-stable: a schema change bumps this number and wipes local data instead of migrating.
+    // Versions up to 9 were pre-stable and wiped data on change. From 10 on, every change migrates.
     this.version(9)
       .stores({
         streams: 'id, name, createdAt, parentId',
@@ -119,13 +139,44 @@ class PileFileDB extends Dexie {
         files: 'id',
         thumbs: 'id',
       })
-      .upgrade((tx) => Promise.all(tx.storeNames.map((name) => tx.table(name).clear())))
+      .upgrade((tx) => {
+        // Only the tables that existed at v9; later versions add their own, which are not in scope here.
+        const v9 = ['streams', 'messages', 'versions', 'pins', 'tags', 'attachments', 'files', 'thumbs']
+        return Promise.all(v9.filter((n) => tx.storeNames.includes(n)).map((n) => tx.table(n).clear()))
+      })
+    // v10: sync. Streams gain updatedAt; the outbox queues work for the server; meta holds sync state.
+    this.version(10)
+      .stores({
+        outbox: '++seq',
+        meta: 'key',
+      })
+      .upgrade((tx) =>
+        tx
+          .table('streams')
+          .toCollection()
+          .modify((s: Stream) => {
+            if (s.updatedAt === undefined) s.updatedAt = s.createdAt
+          }),
+      )
   }
 }
 
 export const db = new PileFileDB()
 
 const uid = () => crypto.randomUUID()
+
+// --------------------------------------------------------------- outbox
+
+/** Queues a mutation for the server. Call inside the same transaction as the local write. */
+export function enqueue(body: ActionBody): Promise<unknown> {
+  const action: Action = { ...body, id: uid(), at: Date.now() }
+  return db.outbox.add({ kind: 'action', action })
+}
+
+export const getMeta = async <T,>(key: string): Promise<T | undefined> =>
+  (await db.meta.get(key))?.value as T | undefined
+export const setMeta = (key: string, value: unknown): Promise<unknown> => db.meta.put({ key, value })
+export const deleteMeta = (key: string): Promise<void> => db.meta.delete(key)
 
 /** Lowercased, diacritic-stripped, de-duplicated word tokens. */
 export function tokenize(text: string): string[] {
@@ -202,12 +253,27 @@ export function streamPath(streams: Stream[], id: string): string {
 
 export async function createStream(name: string, parentId: string | null = null): Promise<string> {
   const id = uid()
-  await db.streams.add({ id, name: name.trim(), createdAt: Date.now(), parentId })
+  const now = Date.now()
+  const stream: Stream = { id, name: name.trim(), createdAt: now, updatedAt: now, parentId }
+  await db.transaction('rw', db.streams, db.outbox, async () => {
+    await db.streams.add(stream)
+    await enqueue({ type: 'stream.put', stream })
+  })
   return id
 }
 
+async function putStream(id: string, patch: Partial<Pick<Stream, 'name' | 'parentId'>>): Promise<void> {
+  await db.transaction('rw', db.streams, db.outbox, async () => {
+    const s = await db.streams.get(id)
+    if (!s) return
+    const next: Stream = { ...s, ...patch, updatedAt: Date.now() }
+    await db.streams.put(next)
+    await enqueue({ type: 'stream.put', stream: next })
+  })
+}
+
 export async function renameStream(id: string, name: string): Promise<void> {
-  await db.streams.update(id, { name: name.trim() })
+  await putStream(id, { name: name.trim() })
 }
 
 /** Re-parents a stream. Refuses to nest a stream under itself or one of its descendants. */
@@ -215,29 +281,42 @@ export async function moveStream(id: string, parentId: string | null): Promise<v
   if (parentId === id) return
   const streams = await db.streams.toArray()
   if (parentId && descendantIds(streams, id).includes(parentId)) return
-  await db.streams.update(id, { parentId })
+  await putStream(id, { parentId })
 }
 
 /**
  * Deletes a stream. Its child streams and its own messages move up to its parent
  * (to the top level / no stream when it was top level). Pins in its context are dropped.
+ * The cascade is sent as explicit actions so every device applies the same result.
  */
 export async function deleteStream(id: string): Promise<void> {
-  await db.transaction('rw', db.streams, db.messages, db.pins, async () => {
+  await db.transaction('rw', db.streams, db.messages, db.pins, db.outbox, async () => {
     const stream = await db.streams.get(id)
     if (!stream) return
     const parentId = stream.parentId
-    await db.streams.where('parentId').equals(id).modify({ parentId })
-    await db.messages.where('streamId').equals(id).modify({ streamId: parentId })
-    await db.pins.where('streamId').equals(id).delete()
+    const now = Date.now()
+    for (const child of await db.streams.where('parentId').equals(id).toArray()) {
+      const next = { ...child, parentId, updatedAt: now }
+      await db.streams.put(next)
+      await enqueue({ type: 'stream.put', stream: next })
+    }
+    for (const mid of await db.messages.where('streamId').equals(id).primaryKeys()) {
+      await db.messages.update(mid, { streamId: parentId })
+      await enqueue({ type: 'message.move', messageId: mid, streamId: parentId })
+    }
+    for (const pin of await db.pins.where('streamId').equals(id).toArray()) {
+      await db.pins.delete([pin.messageId, pin.streamId])
+      await enqueue({ type: 'pin.remove', messageId: pin.messageId, streamId: pin.streamId })
+    }
     await db.streams.delete(id)
+    await enqueue({ type: 'stream.delete', streamId: id })
   })
 }
 
 // --------------------------------------------------------------- messages
 
 /** Records any tags not seen before, keeping the first casing. Returns the index keys. */
-async function indexTags(text: string): Promise<string[]> {
+export async function indexTags(text: string): Promise<string[]> {
   const refs = extractTags(text)
   if (refs.length) {
     const existing = await db.tags.bulkGet(refs.map((r) => r.name))
@@ -248,9 +327,9 @@ async function indexTags(text: string): Promise<string[]> {
 }
 
 /** Search words come from the text and from attachment file names. */
-const wordsFor = (text: string, names: string[]) => tokenize([text, ...names].join(' '))
+export const wordsFor = (text: string, names: string[]) => tokenize([text, ...names].join(' '))
 
-async function attachmentNames(messageId: string): Promise<string[]> {
+export async function attachmentNames(messageId: string): Promise<string[]> {
   return (await db.attachments.where('messageId').equals(messageId).toArray()).map((a) => a.name)
 }
 
@@ -262,52 +341,65 @@ export async function addMessage(
 ): Promise<string> {
   const id = uid()
   const now = Date.now()
-  await db.transaction('rw', db.messages, db.versions, db.tags, db.attachments, db.files, async () => {
-    await db.messages.add({
-      id,
-      text,
-      createdAt: now,
-      updatedAt: now,
-      streamId: isVirtual(streamId) ? null : streamId,
-      unread: 1,
-      words: wordsFor(
+  await db.transaction(
+    'rw',
+    [db.messages, db.versions, db.tags, db.attachments, db.files, db.outbox],
+    async () => {
+      const message: Message = {
+        id,
         text,
-        files.map((f) => f.name),
-      ),
-      tags: await indexTags(text),
-      versionCount: 1,
-      replyToId,
-      attachmentCount: files.length,
-    })
-    await db.versions.add({ id: uid(), messageId: id, text, createdAt: now })
-    await storeFiles(id, files, now, 0)
-  })
+        createdAt: now,
+        updatedAt: now,
+        streamId: isVirtual(streamId) ? null : streamId,
+        unread: 1,
+        words: wordsFor(
+          text,
+          files.map((f) => f.name),
+        ),
+        tags: await indexTags(text),
+        versionCount: 1,
+        replyToId,
+        attachmentCount: files.length,
+      }
+      await db.messages.add(message)
+      const version: Version = { id: uid(), messageId: id, text, createdAt: now }
+      await db.versions.add(version)
+      const attachments = await storeFiles(id, files, now, 0)
+      const { words: _w, tags: _t, ...row } = message
+      await enqueue({ type: 'message.create', message: row, version, attachments })
+      for (const att of attachments) await db.outbox.add({ kind: 'upload', attachmentId: att.id })
+    },
+  )
   return id
 }
 
-async function storeFiles(messageId: string, files: File[], now: number, firstOrder: number): Promise<void> {
+async function storeFiles(messageId: string, files: File[], now: number, firstOrder: number): Promise<Attachment[]> {
+  const out: Attachment[] = []
   for (const [i, f] of files.entries()) {
-    const attId = uid()
-    await db.attachments.add({
-      id: attId,
+    const att: Attachment = {
+      id: uid(),
       messageId,
       name: f.name,
       type: f.type || 'application/octet-stream',
       size: f.size,
       createdAt: now,
       order: firstOrder + i,
-    })
-    await db.files.add({ id: attId, blob: f })
+    }
+    await db.attachments.add(att)
+    await db.files.add({ id: att.id, blob: f })
+    out.push(att)
   }
+  return out
 }
 
 /** Records a new version. The message keeps its original createdAt so ordering is stable. */
 export async function editMessage(id: string, text: string): Promise<void> {
   const now = Date.now()
-  await db.transaction('rw', db.messages, db.versions, db.tags, db.attachments, async () => {
+  await db.transaction('rw', [db.messages, db.versions, db.tags, db.attachments, db.outbox], async () => {
     const m = await db.messages.get(id)
     if (!m || m.text === text) return
-    await db.versions.add({ id: uid(), messageId: id, text, createdAt: now })
+    const version: Version = { id: uid(), messageId: id, text, createdAt: now }
+    await db.versions.add(version)
     await db.messages.update(id, {
       text,
       words: wordsFor(text, await attachmentNames(id)),
@@ -315,6 +407,7 @@ export async function editMessage(id: string, text: string): Promise<void> {
       updatedAt: now,
       versionCount: m.versionCount + 1,
     })
+    await enqueue({ type: 'message.edit', version })
   })
 }
 
@@ -323,65 +416,96 @@ export async function editMessage(id: string, text: string): Promise<void> {
  * show the message afterwards: the Inbox, the new stream, and that stream's ancestors.
  */
 export async function moveMessage(id: string, streamId: string | null): Promise<void> {
-  await db.transaction('rw', db.messages, db.streams, db.pins, async () => {
+  await db.transaction('rw', [db.messages, db.streams, db.pins, db.outbox], async () => {
     await db.messages.update(id, { streamId })
+    await enqueue({ type: 'message.move', messageId: id, streamId })
     const streams = await db.streams.toArray()
-    const keep = new Set<string>([INBOX_ID])
+    const keep = new Set<string>([INBOX_ID, ALL_ID])
     if (streamId) {
       keep.add(streamId)
       for (const a of ancestorsOf(streams, streamId)) keep.add(a.id)
     }
-    await db.pins
+    const stale = await db.pins
       .where('messageId')
       .equals(id)
       .filter((p) => !keep.has(p.streamId))
-      .delete()
+      .toArray()
+    for (const p of stale) {
+      await db.pins.delete([p.messageId, p.streamId])
+      await enqueue({ type: 'pin.remove', messageId: p.messageId, streamId: p.streamId })
+    }
   })
+}
+
+/** Removes a message and everything hanging off it locally. Remote changes use the same path. */
+export async function purgeMessageLocally(id: string): Promise<void> {
+  const attIds = await db.attachments.where('messageId').equals(id).primaryKeys()
+  await db.files.bulkDelete(attIds)
+  await db.thumbs.bulkDelete(attIds)
+  await db.attachments.bulkDelete(attIds)
+  await db.versions.where('messageId').equals(id).delete()
+  await db.pins.where('messageId').equals(id).delete()
+  await db.messages.delete(id)
 }
 
 export async function deleteMessage(id: string): Promise<void> {
   await db.transaction(
     'rw',
-    [db.messages, db.versions, db.pins, db.attachments, db.files, db.thumbs],
+    [db.messages, db.versions, db.pins, db.attachments, db.files, db.thumbs, db.outbox],
     async () => {
-      const attIds = await db.attachments.where('messageId').equals(id).primaryKeys()
-      await db.files.bulkDelete(attIds)
-      await db.thumbs.bulkDelete(attIds)
-      await db.attachments.bulkDelete(attIds)
-      await db.versions.where('messageId').equals(id).delete()
-      await db.pins.where('messageId').equals(id).delete()
-      await db.messages.delete(id)
+      await purgeMessageLocally(id)
+      await enqueue({ type: 'message.delete', messageId: id })
     },
   )
 }
 
 // ------------------------------------------------------------ attachments
 
+/** Installed by the sync engine: fetches an attachment's bytes from the server when signed in. */
+export let remoteFileFetcher: ((attachmentId: string) => Promise<Blob | undefined>) | null = null
+export function setRemoteFileFetcher(fn: typeof remoteFileFetcher): void {
+  remoteFileFetcher = fn
+}
+
+/** Attachment bytes: from the local store, or fetched from the server and cached locally. */
 export async function getFileBlob(attachmentId: string): Promise<Blob | undefined> {
-  return (await db.files.get(attachmentId))?.blob
+  const local = await db.files.get(attachmentId)
+  if (local) return local.blob
+  const blob = await remoteFileFetcher?.(attachmentId)
+  if (blob) await db.files.put({ id: attachmentId, blob })
+  return blob
 }
 
 /** Pending thumbnail work, so two tiles for the same file share one generation. */
-const thumbJobs = new Map<string, Promise<Blob | null>>()
+const thumbJobs = new Map<string, Promise<ThumbStatus>>()
 
-/** The stored thumbnail for an image or video, generated on first request. Null when undecodable. */
-export function getThumbBlob(att: Attachment): Promise<Blob | null> {
+/** A thumbnail blob, `null` when the file cannot be decoded, or 'missing' when its bytes are not available yet. */
+export type ThumbStatus = Blob | null | 'missing'
+
+/** The stored thumbnail for an image or video, generated on first request. */
+export function getThumbBlob(att: Attachment): Promise<ThumbStatus> {
   const kind = kindOf(att.type)
   if (kind !== 'image' && kind !== 'video') return Promise.resolve(null)
   let job = thumbJobs.get(att.id)
   if (!job) {
-    job = (async () => {
+    job = (async (): Promise<ThumbStatus> => {
       const cached = await db.thumbs.get(att.id)
       if (cached) return cached.blob
-      const file = await db.files.get(att.id)
-      if (!file) return null
-      const made = await makeThumbnail(file.blob, kind)
+      const blob = await getFileBlob(att.id)
+      if (!blob) return 'missing'
+      const made = await makeThumbnail(blob, kind)
       if (!made) return null
       await db.thumbs.put({ id: att.id, blob: made.blob, width: made.width, height: made.height })
       return made.blob
     })()
     thumbJobs.set(att.id, job)
-    job.catch(() => thumbJobs.delete(att.id))
+    // Only a finished thumbnail is worth remembering; anything else should be retried later.
+    job.then(
+      (r) => {
+        if (!(r instanceof Blob)) thumbJobs.delete(att.id)
+      },
+      () => thumbJobs.delete(att.id),
+    )
   }
   return job
 }
@@ -389,7 +513,10 @@ export function getThumbBlob(att: Attachment): Promise<Blob | null> {
 // ------------------------------------------------------------- read state
 
 export async function setRead(id: string, read: boolean): Promise<void> {
-  await db.messages.update(id, { unread: read ? 0 : 1 })
+  await db.transaction('rw', db.messages, db.outbox, async () => {
+    await db.messages.update(id, { unread: read ? 0 : 1 })
+    await enqueue({ type: 'message.read', messageId: id, unread: read ? 0 : 1 })
+  })
 }
 
 export function unreadCount(): Promise<number> {
@@ -398,18 +525,29 @@ export function unreadCount(): Promise<number> {
 
 /** Clears the Inbox. Returns how many messages were marked. */
 export async function markAllRead(): Promise<number> {
-  return db.messages.where('unread').equals(1).modify({ unread: 0 })
+  return db.transaction('rw', db.messages, db.outbox, async () => {
+    const n = await db.messages.where('unread').equals(1).modify({ unread: 0 })
+    await enqueue({ type: 'read.all' })
+    return n
+  })
 }
 
 // ------------------------------------------------------------------- pins
 
 /** Pins (or re-pins, refreshing the timestamp) a message in the given context. */
 export async function pinMessage(messageId: string, streamId: string): Promise<void> {
-  await db.pins.put({ messageId, streamId, pinnedAt: Date.now() })
+  const pin: Pin = { messageId, streamId, pinnedAt: Date.now() }
+  await db.transaction('rw', db.pins, db.outbox, async () => {
+    await db.pins.put(pin)
+    await enqueue({ type: 'pin.put', pin })
+  })
 }
 
 export async function unpinMessage(messageId: string, streamId: string): Promise<void> {
-  await db.pins.delete([messageId, streamId])
+  await db.transaction('rw', db.pins, db.outbox, async () => {
+    await db.pins.delete([messageId, streamId])
+    await enqueue({ type: 'pin.remove', messageId, streamId })
+  })
 }
 
 // ------------------------------------------------------------------ views

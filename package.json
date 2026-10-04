@@ -5,13 +5,20 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:server": "node --watch --env-file-if-exists=.env server/src/index.ts",
+    "start": "node --env-file-if-exists=.env server/src/index.ts",
+    "cli": "node --env-file-if-exists=.env server/src/cli.ts",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "node e2e/run.mjs"
   },
   "dependencies": {
+    "@hono/node-server": "^2.1.3",
     "dexie": "^4.4.6",
     "dexie-react-hooks": "^4.4.0",
+    "hono": "^4.13.13",
     "lucide-react": "^1.51.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -27,7 +34,12 @@
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",
+    "playwright": "^1.63.0",
     "typescript": "~6.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "vite-plugin-pwa": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=22.13"
   }
 }
