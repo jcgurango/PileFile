@@ -1,0 +1,335 @@
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
+import {
+  deleteMessage,
+  editMessage,
+  INBOX_ID,
+  pinMessage,
+  setRead,
+  streamPath,
+  unpinMessage,
+  versionsOf,
+  viewName,
+  type Message,
+  type Pin,
+  type Stream,
+} from '../db'
+import { formatFull, formatTimestamp } from '../format'
+import {
+  ArrowUpToLine,
+  Check,
+  FolderInput,
+  History,
+  Mail,
+  Pencil,
+  Pin as PinIcon,
+  PinOff,
+  Reply,
+  Trash2,
+  X,
+} from 'lucide-react'
+import { autosize } from '../autosize'
+import { useIsTouch } from '../useMediaQuery'
+import type { Focus } from '../App'
+import Clamp from './Clamp'
+import IconButton from './IconButton'
+import MessageBody from './MessageBody'
+import MovePicker from './MovePicker'
+import Quote from './Quote'
+import VersionCalendar from './VersionCalendar'
+import VersionNav from './VersionNav'
+
+type Panel = 'none' | 'edit' | 'move' | 'history'
+
+interface Props {
+  message: Message
+  streams: Stream[]
+  /** The view this card is rendered in: a stream id or INBOX_ID. Pins are scoped to it. */
+  currentStreamId: string
+  /** Every pin of this message, in any context. */
+  pins: Pin[]
+  /** Active in-stream search terms, highlighted in the text. */
+  terms?: string[]
+  focus: Focus | null
+  /** The replied-to message: a Message, null when it was deleted, undefined when this is not a reply. */
+  replyTarget?: Message | null
+  onOpenStream: (streamId: string) => void
+  onTagClick: (tag: string) => void
+  onReply: (message: Message) => void
+  onJumpTo: (message: Message) => void
+}
+
+export default function MessageCard({
+  message,
+  streams,
+  currentStreamId,
+  pins,
+  terms = [],
+  focus,
+  replyTarget,
+  onOpenStream,
+  onTagClick,
+  onReply,
+  onJumpTo,
+}: Props) {
+  const [panel, setPanel] = useState<Panel>('none')
+  const [draft, setDraft] = useState(message.text)
+  // Version browsing: index into the newest-first version list; 0 is the current text.
+  const [viewIdx, setViewIdx] = useState(0)
+  const [calendarOpen, setCalendarOpen] = useState(false)
+  const versions = useLiveQuery(
+    () => (panel === 'history' ? versionsOf(message.id) : Promise.resolve(undefined)),
+    [panel, message.id],
+  )
+  const viewing = panel === 'history' && versions?.length ? versions[Math.min(viewIdx, versions.length - 1)] : undefined
+  const showingOld = viewing !== undefined && viewIdx > 0
+  const cardRef = useRef<HTMLElement>(null)
+  const editRef = useRef<HTMLTextAreaElement>(null)
+  const touch = useIsTouch()
+
+  // Scroll into view and glow briefly when opened from a search result.
+  useEffect(() => {
+    const el = cardRef.current
+    if (!focus || !el) return
+    el.scrollIntoView({ block: 'center' })
+    const styles = getComputedStyle(el)
+    const glow = styles.getPropertyValue('--accent-soft').trim()
+    const resting = styles.backgroundColor
+    const anim = el.animate(
+      [
+        { backgroundColor: glow },
+        { backgroundColor: glow, offset: 0.6 },
+        { backgroundColor: resting },
+      ],
+      { duration: 1600, easing: 'ease-out' },
+    )
+    return () => anim.cancel()
+  }, [focus])
+
+  useEffect(() => {
+    if (panel !== 'edit') return
+    const el = editRef.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [panel])
+
+  useEffect(() => {
+    if (panel === 'edit') autosize(editRef.current)
+  }, [draft, panel])
+
+  const toggle = (next: Panel) => {
+    if (next === 'edit') setDraft(message.text)
+    if (next === 'history') {
+      setViewIdx(0)
+      setCalendarOpen(false)
+    }
+    setPanel((prev) => (prev === next ? 'none' : next))
+  }
+
+  const save = async () => {
+    const text = draft.trim()
+    if (text) await editMessage(message.id, text)
+    setPanel('none')
+  }
+
+  const onEditKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Escape') {
+      setPanel('none')
+    } else if (!touch && e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault()
+      void save()
+    }
+  }
+
+  const remove = async () => {
+    if (confirm('Delete this message and all of its versions?')) await deleteMessage(message.id)
+  }
+
+  const edited = message.versionCount > 1
+  const pinnedHere = pins.find((p) => p.streamId === currentStreamId)
+  const contextName = (id: string) => viewName(id) ?? (streamPath(streams, id) || 'a deleted stream')
+  const pinnedElsewhere = pins
+    .filter((p) => p.streamId !== currentStreamId)
+    .sort((a, b) => contextName(a.streamId).localeCompare(contextName(b.streamId)))
+  const home = message.streamId ? streams.find((s) => s.id === message.streamId) : undefined
+  const showHomeChip = home && home.id !== currentStreamId
+
+  return (
+    <article
+      ref={cardRef}
+      className={`msg${pins.length ? ' pinned' : ''}${message.unread ? ' unread' : ''}${showingOld ? ' viewing-old' : ''}`}
+    >
+      {message.replyToId && (
+        <Quote
+          message={replyTarget ?? null}
+          onOpen={replyTarget ? () => onJumpTo(replyTarget) : undefined}
+        />
+      )}
+      {panel === 'edit' ? (
+        <div className="msg-edit">
+          <textarea
+            ref={editRef}
+            rows={1}
+            value={draft}
+            aria-label="Edit message"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onEditKey}
+          />
+          <div className="msg-edit-foot">
+            <span className="hint">{touch ? 'Markdown supported' : 'Enter to save · Esc to cancel'}</span>
+            <IconButton icon={X} label="Cancel" hint="Cancel (Esc)" size={18} onClick={() => setPanel('none')} />
+            <IconButton
+              icon={Check}
+              label="Save"
+              hint="Save (Enter)"
+              size={18}
+              align="end"
+              className="send-btn"
+              onClick={save}
+              disabled={!draft.trim()}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="msg-text">
+          <Clamp>
+            <MessageBody
+              text={viewing ? viewing.text : message.text}
+              terms={terms}
+              onChange={showingOld ? undefined : (next) => editMessage(message.id, next)}
+              onTagClick={onTagClick}
+            />
+          </Clamp>
+        </div>
+      )}
+
+      <footer className="msg-foot">
+        <span className="msg-meta">
+          {message.unread === 1 && <span className="unread-dot" role="img" aria-label="Unread" title="Unread" />}
+          {pinnedHere ? (
+            <span className="pin-badge" title={`Pinned here ${formatFull(pinnedHere.pinnedAt)}`}>
+              <PinIcon size={11} strokeWidth={2} aria-hidden="true" />
+              Pinned
+            </span>
+          ) : pinnedElsewhere.length > 0 ? (
+            <span
+              className="pin-badge elsewhere"
+              title={pinnedElsewhere
+                .map((p) => `Pinned in ${contextName(p.streamId)} ${formatFull(p.pinnedAt)}`)
+                .join('\n')}
+            >
+              <PinIcon size={11} strokeWidth={2} aria-hidden="true" />
+              Pinned in {pinnedElsewhere.map((p) => contextName(p.streamId)).join(', ')}
+            </span>
+          ) : null}
+          <time dateTime={new Date(message.createdAt).toISOString()} title={formatFull(message.createdAt)}>
+            {formatTimestamp(message.createdAt)}
+          </time>
+          {edited && (
+            <>
+              <span aria-hidden="true">·</span>
+              <time
+                dateTime={new Date(message.updatedAt).toISOString()}
+                title={`Edited ${formatFull(message.updatedAt)}`}
+              >
+                edited {formatTimestamp(message.updatedAt)}
+              </time>
+            </>
+          )}
+          {showHomeChip && (
+            <button
+              className="chip"
+              onClick={() => onOpenStream(home.id)}
+              title={streamPath(streams, home.id)}
+            >
+              #{home.name}
+            </button>
+          )}
+        </span>
+        <span className="msg-actions">
+          {message.unread === 1 ? (
+            <IconButton
+              icon={Check}
+              label="Mark read"
+              hint={currentStreamId === INBOX_ID ? 'Mark read and clear from Inbox' : 'Mark read'}
+              onClick={() => setRead(message.id, true)}
+            />
+          ) : (
+            <IconButton
+              icon={Mail}
+              label="Mark unread"
+              hint="Mark unread: back to the Inbox"
+              onClick={() => setRead(message.id, false)}
+            />
+          )}
+          <IconButton icon={Reply} label="Reply" hint="Reply with a backlink" onClick={() => onReply(message)} />
+          {pinnedHere ? (
+            <>
+              <IconButton
+                icon={ArrowUpToLine}
+                label="Re-pin"
+                hint="Re-pin: move back to the top"
+                onClick={() => pinMessage(message.id, currentStreamId)}
+              />
+              <IconButton
+                icon={PinOff}
+                label="Unpin"
+                onClick={() => unpinMessage(message.id, currentStreamId)}
+              />
+            </>
+          ) : (
+            <IconButton
+              icon={PinIcon}
+              label="Pin"
+              hint={`Pin in ${viewName(currentStreamId) ?? 'this stream'}`}
+              onClick={() => pinMessage(message.id, currentStreamId)}
+            />
+          )}
+          <IconButton icon={Pencil} label="Edit" active={panel === 'edit'} onClick={() => toggle('edit')} />
+          <IconButton
+            icon={FolderInput}
+            label="Move"
+            hint="Move to another stream"
+            active={panel === 'move'}
+            onClick={() => toggle('move')}
+          />
+          {edited && (
+            <IconButton
+              icon={History}
+              label={`History · ${message.versionCount - 1}`}
+              hint={`${message.versionCount - 1} earlier ${message.versionCount === 2 ? 'version' : 'versions'}`}
+              badge={message.versionCount - 1}
+              active={panel === 'history'}
+              onClick={() => toggle('history')}
+            />
+          )}
+          <IconButton icon={Trash2} label="Delete" danger align="end" onClick={remove} />
+        </span>
+      </footer>
+
+      {panel === 'move' && (
+        <MovePicker message={message} streams={streams} onClose={() => setPanel('none')} />
+      )}
+      {panel === 'history' && versions && versions.length > 0 && (
+        <VersionNav
+          versions={versions}
+          index={Math.min(viewIdx, versions.length - 1)}
+          onChange={setViewIdx}
+          onOpenCalendar={() => setCalendarOpen(true)}
+        />
+      )}
+      {calendarOpen && versions && versions.length > 0 && (
+        <VersionCalendar
+          versions={versions}
+          initialIndex={Math.min(viewIdx, versions.length - 1)}
+          onPick={(i) => {
+            setViewIdx(i)
+            setCalendarOpen(false)
+          }}
+          onClose={() => setCalendarOpen(false)}
+        />
+      )}
+    </article>
+  )
+}
