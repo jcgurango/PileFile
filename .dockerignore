@@ -1,0 +1,13 @@
+.git
+node_modules
+dist
+dist-ssr
+dev-dist
+data
+.env
+*.log
+e2e/.shots
+.vscode
+.idea
+Dockerfile
+.dockerignore

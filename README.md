@@ -40,6 +40,16 @@ npm run cli -- user create alice     # prompts for a password
 
 Environment: `PORT` (8787), `DATA_DIR` (./data), `STATIC_DIR` (./dist), `COOKIE_SECURE=1` behind HTTPS (automatic when `NODE_ENV=production`).
 
+### Docker
+
+```sh
+docker build -t jcgurango/pilefile:latest .
+docker run -d --name pilefile -p 8787:8787 -v pilefile-data:/data jcgurango/pilefile:latest
+docker exec -it pilefile node server/src/cli.ts user create alice   # prompts for a password
+```
+
+The image serves the built client and the API on port 8787, stores the database and attachments in `/data`, and runs as the unprivileged `node` user (bind mounts must be writable by uid 1000). Set `-e COOKIE_SECURE=1` when it sits behind HTTPS.
+
 ### End-to-end tests
 
 ```sh
