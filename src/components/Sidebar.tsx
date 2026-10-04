@@ -92,7 +92,10 @@ export default function Sidebar({
       <aside className={`sidebar${open ? ' open' : ''}`} aria-label="Streams and search">
         <div className="sidebar-head">
           <div className="brand-row">
-            <h1 className="brand">PileFile</h1>
+            <h1 className="brand">
+              <img className="brand-icon" src="/pilefile-icon.svg" alt="" width={22} height={22} />
+              PileFile
+            </h1>
             <IconButton
               icon={X}
               label="Close streams"

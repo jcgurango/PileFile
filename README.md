@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/pilefile-icon.svg" alt="PileFile icon" width="112" height="112">
+</p>
+
 # PileFile
 
 A local-first notes app that works like the "saved messages" chat you keep with yourself.
@@ -32,7 +36,7 @@ npm run dev          # Vite on :5173, proxies /api to the server
 npm run cli -- user create alice     # prompts for a password
 ```
 
-`npm run build` type-checks client and server and produces `dist/`. `npm start` runs the server, which serves `dist/` and the API from one process. Requires Node 22.13+ (built-in SQLite).
+`npm run build` type-checks client and server and produces `dist/`. `npm run icons` re-renders the PNG app icons in `public/icons/` from `public/pilefile-icon.svg`. `npm start` runs the server, which serves `dist/` and the API from one process. Requires Node 22.13+ (built-in SQLite).
 
 Environment: `PORT` (8787), `DATA_DIR` (./data), `STATIC_DIR` (./dist), `COOKIE_SECURE=1` behind HTTPS (automatic when `NODE_ENV=production`).
 

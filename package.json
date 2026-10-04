@@ -12,7 +12,8 @@
     "typecheck": "tsc -b",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test:e2e": "node e2e/run.mjs"
+    "test:e2e": "node e2e/run.mjs",
+    "icons": "node scripts/icons.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.3",

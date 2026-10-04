@@ -96,7 +96,10 @@ function LoginDialog({ onClose }: { onClose: () => void }) {
       }}
     >
       <form className="login-form" onSubmit={submit}>
-        <h2>Log in</h2>
+        <h2>
+          <img className="brand-icon" src="/pilefile-icon.svg" alt="" width={22} height={22} />
+          Log in to PileFile
+        </h2>
         <p className="muted small">Anything already on this device is merged into your account.</p>
         <label>
           Username

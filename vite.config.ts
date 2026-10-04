@@ -8,7 +8,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'icons/apple-touch-icon.png'],
+      includeAssets: ['pilefile-icon.svg', 'icons/apple-touch-icon.png'],
       manifest: {
         name: 'PileFile',
         short_name: 'PileFile',
