@@ -99,13 +99,14 @@ function runSpec(file) {
   return new Promise((resolve) => {
     const child = spawn('node', [join(e2eDir, file)], {
       cwd: root,
-      env: { ...process.env, E2E_BASE: BASE, E2E_DATA: dataDir },
+      env: { ...process.env, E2E_BASE: BASE, E2E_PROD_BASE: `http://localhost:${API_PORT}`, E2E_DATA: dataDir },
       stdio: 'inherit',
     })
     child.on('exit', (code) => resolve(code ?? 1))
   })
 }
 
+const viteBin = join(root, 'node_modules', '.bin', 'vite')
 const specs = readdirSync(e2eDir)
   .filter((f) => /^\d+-.*\.mjs$/.test(f))
   .filter((f) => only.length === 0 || only.some((o) => f.includes(o)))
@@ -115,8 +116,15 @@ if (specs.length === 0) {
   process.exit(2)
 }
 
+// Specs with "prod" in the name run against the built app served by the API server itself,
+// which is the only way to exercise the real service worker (share target, precache).
+const needsProd = specs.some((f) => /prod/.test(f))
+if (needsProd) {
+  console.log('building production bundle for prod specs…')
+  execFileSync(viteBin, ['build'], { cwd: root, stdio: 'ignore' })
+}
 await freshServer()
-const vite = start(join(root, 'node_modules', '.bin', 'vite'), ['--port', String(WEB_PORT), '--strictPort'], {
+const vite = start(viteBin, ['--port', String(WEB_PORT), '--strictPort'], {
   API_PORT: String(API_PORT),
 })
 await waitFor(BASE, 'Vite').catch((err) => {
@@ -142,4 +150,5 @@ if (failed) {
 }
 await stopAll()
 if (dataDir) rmSync(dataDir, { recursive: true, force: true })
+if (needsProd) rmSync(join(root, 'dist'), { recursive: true, force: true })
 process.exit(failed ? 1 : 0)

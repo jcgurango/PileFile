@@ -4,6 +4,9 @@ import { chromium } from 'playwright'
 /** Base URL of the app under test (the Vite dev server that proxies /api to the API server). */
 export const BASE = process.env.E2E_BASE ?? 'http://localhost:5173'
 
+/** The production build served by the API server; set by the runner only for specs named *prod*. */
+export const PROD_BASE = process.env.E2E_PROD_BASE ?? ''
+
 /** Server data directory for the current run, when a spec needs to look at files on disk. */
 export const DATA_DIR = process.env.E2E_DATA ?? ''
 

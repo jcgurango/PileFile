@@ -17,6 +17,7 @@ src/                 React client (Vite). Components in src/components, sync eng
 src/db.ts            Dexie schema, all local mutations (each one also enqueues a sync action), queries.
 src/sync/engine.ts   Outbox drain, SSE pokes, pulls, login/logout, merge-up on first login.
 src/sync/apply.ts    Applies server changes to IndexedDB (direct table writes, never via db.ts mutations).
+src/sw.ts            Service worker (own tsconfig.sw.json): precache + share-target intake.
 shared/protocol.ts   Row types, Action and Change unions, API shapes. Imported by both sides.
 server/src/          Hono API: db.ts (SQLite + migrations), auth.ts, sync.ts (apply/pull/change log), app.ts, cli.ts.
 e2e/                 Playwright specs (NN-*.mjs) + run.mjs runner + fixtures. Plain scripts, PASS/FAIL lines.
@@ -48,6 +49,7 @@ Server runs TypeScript directly on Node 22.13+ (type stripping): server code mus
 - **Markdown.** GitHub flavoured, single newlines are line breaks, raw HTML is shown as text. Task checkboxes are live and write back to the exact `[ ]` character by source offset. `#Tag` runs are clickable and indexed (exact match, case-insensitive; a word prefix search still finds the word). Typing `#` in either search box offers tag completions.
 - **Input.** Keyboard: Enter saves, Shift+Enter newline, Esc cancels. Touch (`pointer: coarse`): Enter inserts a newline, the send button saves. On touch or narrow screens (`max-width: 760px`) a card shows one "More actions" button that opens a bottom sheet (`ActionSheet`) with the labelled actions; desktop keeps the hover icon row. Icon buttons grow to 38px on coarse pointers.
 - **Layout.** Messages are flush full-width rows with hairline separators, no cards. Composer, inline editor and collapsed messages share one height cap (`--clamp-h`); long messages get Show more. Tooltips are `display:none` until hover so they never widen a scroll container.
+- **Share target.** Installed PWA receives OS shares at `POST /share`. `src/sw.ts` (custom worker, `injectManifest`) stashes the payload in a tiny separate IndexedDB (`src/share-store.ts`) and redirects to `/?share=1`; `App` collects it on launch and on visibility, `StreamView` appends text and files to the open view's composer. Never auto-post a share. The server answers a bare `POST /share` with a 303 to `/` for browsers without a worker.
 - **Search.** Sidebar search is global (streams + messages, split sections). Each view also has its own Search in the header that filters in memory and highlights matches, including inside rendered Markdown.
 
 ## Sync model (keep these invariants)
@@ -61,7 +63,7 @@ Server runs TypeScript directly on Node 22.13+ (type stripping): server code mus
 
 ## Testing habits
 
-- `e2e/helpers.mjs` has `launch()`, `checker()`, `fixture()`, `shotPath()`. Specs print PASS/FAIL and exit non-zero on failure. The runner restarts the server on a clean database before any spec whose name contains `sync`.
+- `e2e/helpers.mjs` has `launch()`, `checker()`, `fixture()`, `shotPath()`, `PROD_BASE`. A spec whose file name contains `prod` runs against the production build served by the API server (the runner builds `dist/` first); use that for anything that needs the real service worker. Specs print PASS/FAIL and exit non-zero on failure. The runner restarts the server on a clean database before any spec whose name contains `sync`.
 - Locate cards by `.msg[data-id=…]` when the test edits them: text-based locators break while the editor replaces the body.
 - `check()` strings are the spec's documentation; keep them descriptive.
 - When adding a feature, extend the matching spec rather than starting a new file, unless it is a new area.

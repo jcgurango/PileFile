@@ -166,6 +166,10 @@ export function createApp({ db, store, hub = new Hub(), staticDir, secureCookies
 
   app.all('/api/*', (c) => c.json({ error: 'not found' }, 404))
 
+  // Share-target posts are normally intercepted by the service worker. Without one, drop the
+  // payload gracefully and open the app rather than 404.
+  app.post('/share', (c) => c.redirect('/', 303))
+
   // ------------------------------------------------------------ client
 
   if (staticDir && existsSync(staticDir)) {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
   addMessage,
@@ -21,7 +21,7 @@ import {
 } from '../db'
 import { useTagSuggest } from '../useTagSuggest'
 import { CheckCheck, ChevronRight, FolderInput, FolderPlus, Menu, Pencil, Search, Trash2, X } from 'lucide-react'
-import type { Focus } from '../App'
+import type { Focus, IncomingShare } from '../App'
 import Composer from './Composer'
 import IconButton from './IconButton'
 import MessageCard from './MessageCard'
@@ -37,6 +37,9 @@ interface Props {
   onOpenStream: (streamId: string, messageId?: string) => void
   onOpenDrawer: () => void
   onTagClick: (tag: string) => void
+  /** From the OS share sheet: appended to the current composer's draft and pending files. */
+  share?: IncomingShare | null
+  onShareConsumed?: () => void
 }
 
 export default function StreamView({
@@ -47,6 +50,8 @@ export default function StreamView({
   onOpenStream,
   onOpenDrawer,
   onTagClick,
+  share,
+  onShareConsumed,
 }: Props) {
   const view = useLiveQuery(() => loadStreamView(streamId, streams), [streamId, streams])
   const title = viewName(streamId) ?? stream?.name ?? ''
@@ -86,6 +91,25 @@ export default function StreamView({
       else delete next[streamId]
       return next
     })
+
+  // Consume a share once, after render, into whichever view is open.
+  useEffect(() => {
+    if (!share) return
+    let cancelled = false
+    void Promise.resolve().then(() => {
+      if (cancelled) return
+      setDrafts((d) => {
+        const current = d[streamId] ?? ''
+        return { ...d, [streamId]: current ? `${current}\n${share.text}` : share.text }
+      })
+      if (share.files.length) setPendingFiles((p) => ({ ...p, [streamId]: [...(p[streamId] ?? []), ...share.files] }))
+      onShareConsumed?.()
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [share?.nonce])
 
   const submit = async (text: string, attach: File[]) => {
     await addMessage(text, streamId, replyTo?.id ?? null, attach)
