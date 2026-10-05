@@ -67,6 +67,7 @@ button {
   background: none;
   border: 0;
   padding: 0;
+  -webkit-tap-highlight-color: transparent;
 }
 
 :focus-visible {
@@ -1521,6 +1522,96 @@ button.quote-body:hover .quote-text {
   margin: 4px 8px;
 }
 
+/* ------------------------------------------------------- action sheet */
+
+dialog.sheet {
+  position: fixed;
+  inset: auto 0 0 0;
+  width: 100%;
+  max-width: 560px;
+  max-height: 85dvh;
+  margin: 0 auto;
+  padding: 6px 10px calc(10px + env(safe-area-inset-bottom));
+  border: 0;
+  border-radius: 16px 16px 0 0;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.25);
+  overflow-y: auto;
+}
+
+dialog.sheet::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.sheet-grip {
+  width: 36px;
+  height: 4px;
+  margin: 4px auto 8px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.sheet-title {
+  padding: 2px 14px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.sheet-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 52px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 16px;
+  text-align: left;
+  color: var(--text);
+}
+
+.sheet-item:active,
+.sheet-item:hover {
+  background: var(--surface-2);
+}
+
+.sheet-item.active {
+  color: var(--accent);
+}
+
+.sheet-item.danger {
+  color: var(--danger);
+}
+
+.sheet-label {
+  flex: 1;
+}
+
+.sheet-detail {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.sheet-cancel {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
 /* ------------------------------------------------------- account + sync */
 
 .account {
@@ -1779,6 +1870,18 @@ button.quote-body:hover .quote-text {
 @media (hover: none) {
   [data-tip]::after {
     display: none;
+  }
+}
+
+/* Fingers need bigger targets than mouse pointers. */
+@media (pointer: coarse) {
+  .ibtn {
+    width: 38px;
+    height: 38px;
+  }
+
+  .ibtn.with-badge {
+    padding: 0 10px 0 8px;
   }
 }
 

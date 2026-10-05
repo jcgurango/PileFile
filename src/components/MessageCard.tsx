@@ -19,6 +19,7 @@ import { formatFull, formatTimestamp } from '../format'
 import {
   ArrowUpToLine,
   Check,
+  Ellipsis,
   FolderInput,
   History,
   Mail,
@@ -30,8 +31,9 @@ import {
   X,
 } from 'lucide-react'
 import { autosize } from '../autosize'
-import { useIsTouch } from '../useMediaQuery'
+import { useIsTouch, useMediaQuery } from '../useMediaQuery'
 import type { Focus } from '../App'
+import ActionSheet, { type SheetItem } from './ActionSheet'
 import AttachmentList from './AttachmentList'
 import Clamp from './Clamp'
 import IconButton from './IconButton'
@@ -91,6 +93,9 @@ export default function MessageCard({
   const cardRef = useRef<HTMLElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
   const touch = useIsTouch()
+  // Fingers and narrow screens get one "More" button and a bottom sheet instead of a row of small icons.
+  const compactActions = useMediaQuery('(pointer: coarse), (max-width: 760px)')
+  const [sheetOpen, setSheetOpen] = useState(false)
 
   // Scroll into view and glow briefly when opened from a search result.
   useEffect(() => {
@@ -159,6 +164,71 @@ export default function MessageCard({
     .sort((a, b) => contextName(a.streamId).localeCompare(contextName(b.streamId)))
   const home = message.streamId ? streams.find((s) => s.id === message.streamId) : undefined
   const showHomeChip = home && home.id !== currentStreamId
+
+  type CardAction = SheetItem & { hint?: string; badge?: number }
+  const earlier = message.versionCount - 1
+  const actions: CardAction[] = [
+    message.unread === 1
+      ? {
+          key: 'read',
+          icon: Check,
+          label: 'Mark read',
+          hint: currentStreamId === INBOX_ID ? 'Mark read and clear from Inbox' : 'Mark read',
+          onSelect: () => void setRead(message.id, true),
+        }
+      : {
+          key: 'unread',
+          icon: Mail,
+          label: 'Mark unread',
+          hint: 'Mark unread: back to the Inbox',
+          onSelect: () => void setRead(message.id, false),
+        },
+    { key: 'reply', icon: Reply, label: 'Reply', hint: 'Reply with a backlink', onSelect: () => onReply(message) },
+    ...(pinnedHere
+      ? [
+          {
+            key: 'repin',
+            icon: ArrowUpToLine,
+            label: 'Re-pin',
+            hint: 'Re-pin: move back to the top',
+            onSelect: () => void pinMessage(message.id, currentStreamId),
+          },
+          { key: 'unpin', icon: PinOff, label: 'Unpin', onSelect: () => void unpinMessage(message.id, currentStreamId) },
+        ]
+      : [
+          {
+            key: 'pin',
+            icon: PinIcon,
+            label: 'Pin',
+            hint: `Pin in ${viewName(currentStreamId) ?? 'this stream'}`,
+            onSelect: () => void pinMessage(message.id, currentStreamId),
+          },
+        ]),
+    { key: 'edit', icon: Pencil, label: 'Edit', active: panel === 'edit', onSelect: () => toggle('edit') },
+    {
+      key: 'move',
+      icon: FolderInput,
+      label: 'Move',
+      hint: 'Move to another stream',
+      active: panel === 'move',
+      onSelect: () => toggle('move'),
+    },
+    ...(edited
+      ? [
+          {
+            key: 'history',
+            icon: History,
+            label: `History · ${earlier}`,
+            hint: `${earlier} earlier ${earlier === 1 ? 'version' : 'versions'}`,
+            detail: `${earlier} earlier`,
+            badge: earlier,
+            active: panel === 'history',
+            onSelect: () => toggle('history'),
+          },
+        ]
+      : []),
+    { key: 'delete', icon: Trash2, label: 'Delete', danger: true, onSelect: () => void remove() },
+  ]
 
   return (
     <article
@@ -257,66 +327,27 @@ export default function MessageCard({
           )}
         </span>
         <span className="msg-actions">
-          {message.unread === 1 ? (
-            <IconButton
-              icon={Check}
-              label="Mark read"
-              hint={currentStreamId === INBOX_ID ? 'Mark read and clear from Inbox' : 'Mark read'}
-              onClick={() => setRead(message.id, true)}
-            />
+          {compactActions ? (
+            <IconButton icon={Ellipsis} label="More actions" size={20} align="end" onClick={() => setSheetOpen(true)} />
           ) : (
-            <IconButton
-              icon={Mail}
-              label="Mark unread"
-              hint="Mark unread: back to the Inbox"
-              onClick={() => setRead(message.id, false)}
-            />
-          )}
-          <IconButton icon={Reply} label="Reply" hint="Reply with a backlink" onClick={() => onReply(message)} />
-          {pinnedHere ? (
-            <>
+            actions.map(({ key, icon, label, hint, danger, active, badge, onSelect }) => (
               <IconButton
-                icon={ArrowUpToLine}
-                label="Re-pin"
-                hint="Re-pin: move back to the top"
-                onClick={() => pinMessage(message.id, currentStreamId)}
+                key={key}
+                icon={icon}
+                label={label}
+                hint={hint}
+                danger={danger}
+                active={active}
+                badge={badge}
+                align={key === 'delete' ? 'end' : 'center'}
+                onClick={onSelect}
               />
-              <IconButton
-                icon={PinOff}
-                label="Unpin"
-                onClick={() => unpinMessage(message.id, currentStreamId)}
-              />
-            </>
-          ) : (
-            <IconButton
-              icon={PinIcon}
-              label="Pin"
-              hint={`Pin in ${viewName(currentStreamId) ?? 'this stream'}`}
-              onClick={() => pinMessage(message.id, currentStreamId)}
-            />
+            ))
           )}
-          <IconButton icon={Pencil} label="Edit" active={panel === 'edit'} onClick={() => toggle('edit')} />
-          <IconButton
-            icon={FolderInput}
-            label="Move"
-            hint="Move to another stream"
-            active={panel === 'move'}
-            onClick={() => toggle('move')}
-          />
-          {edited && (
-            <IconButton
-              icon={History}
-              label={`History · ${message.versionCount - 1}`}
-              hint={`${message.versionCount - 1} earlier ${message.versionCount === 2 ? 'version' : 'versions'}`}
-              badge={message.versionCount - 1}
-              active={panel === 'history'}
-              onClick={() => toggle('history')}
-            />
-          )}
-          <IconButton icon={Trash2} label="Delete" danger align="end" onClick={remove} />
         </span>
       </footer>
 
+      {sheetOpen && <ActionSheet title="Message" items={actions} onClose={() => setSheetOpen(false)} />}
       {panel === 'move' && (
         <MovePicker message={message} streams={streams} onClose={() => setPanel('none')} />
       )}

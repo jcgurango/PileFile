@@ -7,7 +7,7 @@ const seedAndLoad = async (label, idbVersion, seed) => {
   const errors = []
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message))
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errors.push(m.type() + ': ' + m.text().slice(0, 300)) })
-  await page.goto(`${BASE}/favicon.svg`)
+  await page.goto(`${BASE}/pilefile-icon.svg`)
   await page.evaluate(seed, idbVersion)
   await page.goto(BASE)
   const ok = await page.getByRole('heading', { name: 'Inbox', level: 2 }).waitFor({ timeout: 8000 }).then(() => true, () => false)

@@ -22,7 +22,7 @@ const waitCount = (n) => page.waitForFunction((n) => document.querySelectorAll('
 const post = async (target, text) => { const c = page.getByLabel(`Write to ${target}`); await c.fill(text); await c.press('Enter'); await card(text.split('\n')[0]).waitFor(); await page.waitForTimeout(10) }
 
 // Pre-stable upgrade path: an older Dexie db (v1 => IDB version 10) with stale data must be wiped, not crash.
-await page.goto(APP + '/favicon.svg')
+await page.goto(APP + '/pilefile-icon.svg')
 await page.evaluate(() => new Promise((resolve, reject) => {
   const req = indexedDB.open('pilefile', 10)
   req.onupgradeneeded = () => {
