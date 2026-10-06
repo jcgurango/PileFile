@@ -12,9 +12,9 @@ interface Props {
 export default function AttachmentList({ items }: Props) {
   const [open, setOpen] = useState<number | null>(null)
   if (items.length === 0) return null
-  const media = items.filter((a) => kindOf(a.type) === 'image' || kindOf(a.type) === 'video')
-  const audio = items.filter((a) => kindOf(a.type) === 'audio')
-  const files = items.filter((a) => kindOf(a.type) === 'file')
+  const media = items.filter((a) => kindOf(a.type, a.name) === 'image' || kindOf(a.type, a.name) === 'video')
+  const audio = items.filter((a) => kindOf(a.type, a.name) === 'audio')
+  const files = items.filter((a) => kindOf(a.type, a.name) === 'file')
 
   return (
     <div className="atts">
@@ -114,7 +114,7 @@ function useFileUrl(att: Attachment | null): string | null {
 
 function MediaTile({ att, onOpen }: { att: Attachment; onOpen: () => void }) {
   const thumb = useThumbUrl(att)
-  const isVideo = kindOf(att.type) === 'video'
+  const isVideo = kindOf(att.type, att.name) === 'video'
   return (
     <div className="att-tile-wrap">
       <button className="att-tile" onClick={onOpen} title={`${att.name} · ${formatBytes(att.size)}`} aria-label={`Open ${att.name}`}>
@@ -149,7 +149,7 @@ function Lightbox({
   const dialogRef = useRef<HTMLDialogElement>(null)
   const att = media[index]
   const url = useFileUrl(att)
-  const isVideo = kindOf(att.type) === 'video'
+  const isVideo = kindOf(att.type, att.name) === 'video'
   const [brokenId, setBrokenId] = useState<string | null>(null)
   const broken = brokenId === att.id
 

@@ -533,7 +533,7 @@ export type ThumbStatus = Blob | null | 'missing'
 
 /** The stored thumbnail for an image or video, generated on first request. */
 export function getThumbBlob(att: Attachment): Promise<ThumbStatus> {
-  const kind = kindOf(att.type)
+  const kind = kindOf(att.type, att.name)
   if (kind !== 'image' && kind !== 'video') return Promise.resolve(null)
   let job = thumbJobs.get(att.id)
   if (!job) {

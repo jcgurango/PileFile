@@ -2,10 +2,19 @@
 
 export type AttachmentKind = 'image' | 'video' | 'audio' | 'file'
 
-export function kindOf(mime: string): AttachmentKind {
+const AUDIO_EXTENSION = /\.(ogg|oga|opus|spx|mp3|m4a|aac|wav|flac)$/i
+
+/**
+ * The stored type is whatever the browser or OS reported when the file was added, and that is
+ * unreliable for audio: an .ogg arrives as `video/ogg` (Firefox), `application/ogg` or with no
+ * type at all. The file name settles those cases; `.ogv` is the Ogg extension that means video.
+ */
+export function kindOf(mime: string, name = ''): AttachmentKind {
+  if (/^(video|application)\/ogg$/.test(mime) && !/\.ogv$/i.test(name)) return 'audio'
   if (mime.startsWith('image/')) return 'image'
   if (mime.startsWith('video/')) return 'video'
   if (mime.startsWith('audio/')) return 'audio'
+  if ((mime === '' || mime === 'application/octet-stream') && AUDIO_EXTENSION.test(name)) return 'audio'
   return 'file'
 }
 

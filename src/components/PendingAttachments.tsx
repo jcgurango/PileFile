@@ -25,7 +25,7 @@ export default function PendingAttachments({ files, onRemove }: Props) {
 }
 
 function PendingPreview({ file }: { file: File }) {
-  const kind = kindOf(file.type)
+  const kind = kindOf(file.type, file.name)
   const imgRef = useRef<HTMLImageElement>(null)
   // The object URL is created and revoked inside one effect, so it is never revoked while shown.
   useEffect(() => {
