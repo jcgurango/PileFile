@@ -41,7 +41,7 @@ export default function MovePicker({ message, streams, onClose }: Props) {
           onChange={() => moveMessage(message.id, null)}
         />
         <span className="picker-name">No stream</span>
-        <span className="muted small">All, and the Inbox while unread</span>
+        <span className="muted small">All and Inbox only</span>
       </label>
 
       {rows.map(({ stream, depth }) => (

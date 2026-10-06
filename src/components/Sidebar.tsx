@@ -4,13 +4,15 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import {
   ALL_ID,
   ancestorsOf,
-  countsByStream,
+  byActivity,
   createStream,
   flattenTree,
   INBOX_ID,
   isVirtual,
+  lastMessageAt,
   search,
   streamPath,
+  unreadCounts,
   type Stream,
 } from '../db'
 import { ChevronDown, ChevronRight, Hash, Inbox, Layers, Plus, Search as SearchIcon, X } from 'lucide-react'
@@ -161,8 +163,10 @@ interface TreeProps {
 }
 
 function StreamTree({ streams, selectedId, collapsed, onToggle, onSelect }: TreeProps) {
-  const counts = useLiveQuery(() => countsByStream(streams), [streams]) ?? {}
-  const rows = useMemo(() => flattenTree(streams), [streams])
+  const counts = useLiveQuery(() => unreadCounts(streams), [streams]) ?? {}
+  // Most recently written-to streams first. Nothing is listed until the dates are in, so rows do not jump.
+  const lastAt = useLiveQuery(() => lastMessageAt(streams), [streams])
+  const rows = useMemo(() => (lastAt ? flattenTree(streams, byActivity(lastAt)) : []), [streams, lastAt])
   const visible = rows.filter(
     ({ stream }) => !ancestorsOf(streams, stream.id).some((a) => collapsed.has(a.id)),
   )
@@ -193,7 +197,6 @@ function StreamTree({ streams, selectedId, collapsed, onToggle, onSelect }: Tree
       <StreamRow
         name="All"
         kind="all"
-        count={counts[ALL_ID]}
         selected={selectedId === ALL_ID}
         onClick={() => onSelect(ALL_ID)}
       />
@@ -201,7 +204,6 @@ function StreamTree({ streams, selectedId, collapsed, onToggle, onSelect }: Tree
         name="Inbox"
         kind="inbox"
         count={counts[INBOX_ID]}
-        emphasizeCount
         selected={selectedId === INBOX_ID}
         onClick={() => onSelect(INBOX_ID)}
       />
@@ -249,9 +251,8 @@ function StreamTree({ streams, selectedId, collapsed, onToggle, onSelect }: Tree
 
 interface StreamRowProps {
   name: string
+  /** Unread messages in this view, shown as a badge when there are any. */
   count?: number
-  /** Show the count as a badge (used for the Inbox count). */
-  emphasizeCount?: boolean
   selected: boolean
   kind?: 'inbox' | 'all' | 'stream'
   depth?: number
@@ -268,7 +269,6 @@ const ROW_ICONS = {
 function StreamRow({
   name,
   count,
-  emphasizeCount,
   selected,
   kind = 'stream',
   depth = 0,
@@ -302,7 +302,9 @@ function StreamRow({
       <button className="stream-btn" onClick={onClick} aria-current={selected ? 'page' : undefined}>
         <span className="stream-name">{name}</span>
         {count ? (
-          <span className={`stream-count${emphasizeCount ? ' badge-count' : ''}`}>{count}</span>
+          <span className="stream-count" title={`${count} unread`}>
+            {count}
+          </span>
         ) : null}
       </button>
     </div>

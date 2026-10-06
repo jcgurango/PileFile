@@ -3,7 +3,6 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import {
   deleteMessage,
   editMessage,
-  INBOX_ID,
   pinMessage,
   setRead,
   streamPath,
@@ -173,14 +172,12 @@ export default function MessageCard({
           key: 'read',
           icon: Check,
           label: 'Mark read',
-          hint: currentStreamId === INBOX_ID ? 'Mark read and clear from Inbox' : 'Mark read',
           onSelect: () => void setRead(message.id, true),
         }
       : {
           key: 'unread',
           icon: Mail,
           label: 'Mark unread',
-          hint: message.streamId === null ? 'Mark unread: back to the Inbox' : 'Mark unread',
           onSelect: () => void setRead(message.id, false),
         },
     { key: 'reply', icon: Reply, label: 'Reply', hint: 'Reply with a backlink', onSelect: () => onReply(message) },

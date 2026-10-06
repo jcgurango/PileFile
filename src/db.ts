@@ -7,8 +7,8 @@ import type { Action, ActionBody } from '../shared/protocol'
  * Two virtual views sit above the streams. IndexedDB keys cannot be null, so these
  * sentinels also serve as pin contexts for the two views.
  * - All: every message, read or not. The default view.
- * - Inbox: unread messages that are not filed in any stream. They leave when marked read
- *   or moved into a stream. The triage zone.
+ * - Inbox: the messages that are not filed in any stream. It opens with the unread filter on,
+ *   so by default a message leaves it when marked read or moved into a stream. The triage zone.
  */
 export const ALL_ID = 'all'
 export const INBOX_ID = 'inbox'
@@ -34,7 +34,7 @@ export interface Message {
   updatedAt: number
   /** The one stream this message is filed in, or null when it is not filed anywhere. */
   streamId: string | null
-  /** 1 until marked read. Set on creation. An unread message with no stream sits in the Inbox. */
+  /** 1 until marked read. Set on creation. */
   unread: 0 | 1
   /** Search tokens of the current text. Multi-entry indexed. */
   words: string[]
@@ -190,10 +190,21 @@ export function tokenize(text: string): string[] {
 
 // ------------------------------------------------------------ stream tree
 
-const byName = (a: Stream, b: Stream) => a.name.localeCompare(b.name)
+type StreamOrder = (a: Stream, b: Stream) => number
 
-export function childrenOf(streams: Stream[], parentId: string | null): Stream[] {
-  return streams.filter((s) => s.parentId === parentId).sort(byName)
+const byName: StreamOrder = (a, b) => a.name.localeCompare(b.name)
+
+/**
+ * Sidebar order: the stream with the most recent message first. Streams with no messages
+ * go last, and ties fall to the stream created first. `lastAt` comes from `lastMessageAt`.
+ */
+export const byActivity =
+  (lastAt: Map<string, number>): StreamOrder =>
+  (a, b) =>
+    (lastAt.get(b.id) ?? 0) - (lastAt.get(a.id) ?? 0) || a.createdAt - b.createdAt || byName(a, b)
+
+export function childrenOf(streams: Stream[], parentId: string | null, order: StreamOrder = byName): Stream[] {
+  return streams.filter((s) => s.parentId === parentId).sort(order)
 }
 
 /** Every stream below `id`, depth first. Does not include `id` itself. */
@@ -229,11 +240,11 @@ export interface TreeRow {
   hasChildren: boolean
 }
 
-/** Depth-first flattening of the whole tree, siblings sorted by name. */
-export function flattenTree(streams: Stream[]): TreeRow[] {
+/** Depth-first flattening of the whole tree, siblings sorted by name unless another order is given. */
+export function flattenTree(streams: Stream[], order: StreamOrder = byName): TreeRow[] {
   const rows: TreeRow[] = []
   const walk = (parentId: string | null, depth: number) => {
-    for (const s of childrenOf(streams, parentId)) {
+    for (const s of childrenOf(streams, parentId, order)) {
       rows.push({ stream: s, depth, hasChildren: childrenOf(streams, s.id).length > 0 })
       walk(s.id, depth + 1)
     }
@@ -521,21 +532,17 @@ export async function setRead(id: string, read: boolean): Promise<void> {
   })
 }
 
-/** The Inbox: unread messages with no stream. null cannot be indexed, hence the filter. */
-const inboxMessages = () => db.messages.where('unread').equals(1).filter((m) => m.streamId === null)
-
 /**
- * Clears the Inbox. Unread messages filed in streams are left alone, so this is sent as
- * one explicit action per message rather than `read.all`. Returns how many were marked.
+ * Marks the given messages read: "Mark all as read" for whatever a view is showing.
+ * Sent as one explicit action per message rather than `read.all`, which would also
+ * clear messages the view does not show.
  */
-export async function markInboxRead(): Promise<number> {
-  return db.transaction('rw', db.messages, db.outbox, async () => {
-    const ids = await inboxMessages().primaryKeys()
+export async function markRead(ids: string[]): Promise<void> {
+  await db.transaction('rw', db.messages, db.outbox, async () => {
     for (const id of ids) {
       await db.messages.update(id, { unread: 0 })
       await enqueue({ type: 'message.read', messageId: id, unread: 0 })
     }
-    return ids.length
   })
 }
 
@@ -571,7 +578,7 @@ export interface StreamViewData {
 }
 
 /**
- * All is every message; the Inbox is every unread one with no stream. A stream shows its own messages
+ * All is every message; the Inbox is every one with no stream. A stream shows its own messages
  * plus those of all streams nested under it. Only pins for `streamId` itself affect the order.
  */
 export async function loadStreamView(streamId: string, streams: Stream[]): Promise<StreamViewData> {
@@ -579,7 +586,8 @@ export async function loadStreamView(streamId: string, streams: Stream[]): Promi
     streamId === ALL_ID
       ? await db.messages.toArray()
       : streamId === INBOX_ID
-        ? await inboxMessages().toArray()
+        ? // null cannot be indexed, hence the filter.
+          await db.messages.filter((m) => m.streamId === null).toArray()
         : await db.messages
             .where('streamId')
             .anyOf([streamId, ...descendantIds(streams, streamId)])
@@ -623,23 +631,35 @@ export function versionsOf(messageId: string): Promise<Version[]> {
   return db.versions.where('messageId').equals(messageId).reverse().sortBy('createdAt')
 }
 
-/** Message counts per stream including nested streams, the Inbox count, and the All total. */
-export async function countsByStream(streams: Stream[]): Promise<Record<string, number>> {
-  const own = new Map<string, number>()
-  await Promise.all(
-    streams.map(async (s) => {
-      own.set(s.id, await db.messages.where('streamId').equals(s.id).count())
-    }),
-  )
-  const counts: Record<string, number> = {
-    [ALL_ID]: await db.messages.count(),
-    [INBOX_ID]: await inboxMessages().count(),
-  }
+/** Unread counts for the sidebar: per stream including nested streams, and the Inbox (unread with no stream). */
+export async function unreadCounts(streams: Stream[]): Promise<Record<string, number>> {
+  const own = new Map<string | null, number>()
+  await db.messages
+    .where('unread')
+    .equals(1)
+    .each((m) => own.set(m.streamId, (own.get(m.streamId) ?? 0) + 1))
+  const counts: Record<string, number> = { [INBOX_ID]: own.get(null) ?? 0 }
   for (const s of streams) {
-    const nested = descendantIds(streams, s.id).reduce((n, id) => n + (own.get(id) ?? 0), 0)
-    counts[s.id] = (own.get(s.id) ?? 0) + nested
+    counts[s.id] = [s.id, ...descendantIds(streams, s.id)].reduce((n, id) => n + (own.get(id) ?? 0), 0)
   }
   return counts
+}
+
+/**
+ * When each stream last received a message (by creation time, so edits do not count),
+ * nested streams included. Streams without any message are left out.
+ */
+export async function lastMessageAt(streams: Stream[]): Promise<Map<string, number>> {
+  const own = new Map<string, number>()
+  await db.messages.each((m) => {
+    if (m.streamId && m.createdAt > (own.get(m.streamId) ?? 0)) own.set(m.streamId, m.createdAt)
+  })
+  const lastAt = new Map<string, number>()
+  for (const s of streams) {
+    const at = Math.max(0, ...[s.id, ...descendantIds(streams, s.id)].map((id) => own.get(id) ?? 0))
+    if (at) lastAt.set(s.id, at)
+  }
+  return lastAt
 }
 
 // ----------------------------------------------------------------- search

@@ -25,6 +25,7 @@ const login = async (page, name, pw) => {
 const status = (page) => page.locator('.account-status').innerText()
 const waitSynced = (page) => page.waitForFunction(() => /^Synced/.test(document.querySelector('.account-status')?.textContent ?? ''), null, { timeout: 15000 })
 const open = async (page, name) => { await page.locator('.stream-list .stream-row', { has: page.locator('.stream-name', { hasText: new RegExp(`^${name}$`) }) }).locator('.stream-btn').click(); await page.getByRole('heading', { name, level: 2 }).waitFor() }
+const inboxCount = (page) => page.locator('.stream-list .stream-row', { hasText: 'Inbox' }).locator('.stream-count')
 const serverFiles = () => { const root = DATA + '/attachments'; if (!existsSync(root)) return 0; return readdirSync(root).flatMap((u) => readdirSync(root + '/' + u)).length }
 
 // A: local-only first, then log in (merge-up)
@@ -98,14 +99,14 @@ await waitSynced(A.page)
 check('A back to synced with nothing pending', !(await status(A.page)).includes('pending'))
 
 // Mark all as read clears only the Inbox; the unread message filed in Work keeps its dot everywhere
-await A.page.waitForFunction(() => document.querySelector('.badge-count')?.textContent === '1')
+await inboxCount(A.page).filter({ hasText: /^1$/ }).waitFor()
 B.page.once('dialog', (d) => d.accept())
 await B.page.locator('header').getByRole('button', { name: 'Mark all as read' }).click()
 await B.page.locator('.empty').waitFor()
-await A.page.waitForFunction(() => !document.querySelector('.badge-count'), null, { timeout: 10000 })
+await inboxCount(A.page).waitFor({ state: 'detached', timeout: 10000 })
 check('mark all as read on B empties A\'s Inbox', (await card(A.page, 'Written offline').locator('.unread-dot').count()) === 0)
 await waitSynced(B.page)
-check('mark all as read leaves the unread message filed in Work unread on both devices', (await card(A.page, 'From A').locator('.unread-dot').count()) === 1 && (await B.page.evaluate(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('messages').objectStore('messages').getAll().onsuccess = (e) => res(e.target.result.filter((m) => m.unread === 1).map((m) => m.text).join('|')) } }))).startsWith('From A'))
+check('mark all as read in the Inbox leaves the unread message filed in Work unread on both devices', (await A.page.locator('.stream-list .stream-row', { hasText: 'Work' }).locator('.stream-count').innerText()) === '1' && (await card(A.page, 'From A').locator('.unread-dot').count()) === 1 && (await B.page.evaluate(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('messages').objectStore('messages').getAll().onsuccess = (e) => res(e.target.result.filter((m) => m.unread === 1).map((m) => m.text).join('|')) } }))).startsWith('From A'))
 
 // Attachment transfer
 await A.page.locator('.composer input[type=file]').setInputFiles([F + 'red-photo.png'])

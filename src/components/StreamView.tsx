@@ -10,7 +10,7 @@ import {
   flattenTree,
   INBOX_ID,
   loadStreamView,
-  markInboxRead,
+  markRead,
   matchesQuery,
   moveStream,
   parseSearch,
@@ -19,9 +19,23 @@ import {
   type Message,
   type Stream,
 } from '../db'
+import { useMediaQuery } from '../useMediaQuery'
 import { useTagSuggest } from '../useTagSuggest'
-import { CheckCheck, ChevronRight, FolderInput, FolderPlus, Menu, Pencil, Search, Trash2, X } from 'lucide-react'
+import {
+  CheckCheck,
+  ChevronRight,
+  Ellipsis,
+  FolderInput,
+  FolderPlus,
+  ListFilter,
+  Menu,
+  Pencil,
+  Search,
+  Trash2,
+  X,
+} from 'lucide-react'
 import type { Focus, IncomingShare } from '../App'
+import ActionSheet from './ActionSheet'
 import Composer from './Composer'
 import IconButton from './IconButton'
 import MessageCard from './MessageCard'
@@ -67,13 +81,30 @@ export default function StreamView({
   const setQuery = (q: string) => setSearchFor({ streamId, query: q })
   const suggest = useTagSuggest(query, setQuery)
 
+  // The unread-only filter is remembered per view, as the time it was switched on (null: switched off).
+  // The Inbox starts with it on, which is what makes it a triage tray; everything else starts with it off.
+  const [unreadOnlySince, setUnreadOnlySince] = useState<Record<string, number | null>>({})
+  const storedSince = unreadOnlySince[streamId]
+  const unreadSince = storedSince !== undefined ? storedSince : streamId === INBOX_ID ? 0 : null
+  const unreadOnly = unreadSince !== null
+  const toggleUnreadOnly = () => setUnreadOnlySince((u) => ({ ...u, [streamId]: unreadOnly ? null : Date.now() }))
+
+  // What the view holds once the unread filter is applied. A message opened from a search result
+  // or a quote after the filter went on stays listed even when read, so there is something to scroll to.
+  const keepId = focus && unreadSince !== null && focus.nonce > unreadSince ? focus.messageId : undefined
+  const listed = useMemo(() => {
+    if (!view) return undefined
+    if (!unreadOnly) return view.messages
+    return view.messages.filter((m) => m.unread === 1 || m.id === keepId)
+  }, [view, unreadOnly, keepId])
+
   // While searching, show only matches, newest first; pins do not reorder results.
   const hasQuery = parsed.terms.length > 0 || parsed.tags.length > 0
   const messages = useMemo(() => {
-    if (!view) return undefined
-    if (!searching || !hasQuery) return view.messages
-    return view.messages.filter((m) => matchesQuery(m, parsed)).sort((a, b) => b.createdAt - a.createdAt)
-  }, [view, searching, hasQuery, parsed])
+    if (!listed) return undefined
+    if (!searching || !hasQuery) return listed
+    return listed.filter((m) => matchesQuery(m, parsed)).sort((a, b) => b.createdAt - a.createdAt)
+  }, [listed, searching, hasQuery, parsed])
 
   // Unsent drafts and pending replies are kept per stream so switching around does not lose them.
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -122,10 +153,12 @@ export default function StreamView({
     onOpenStream(here ? streamId : (target.streamId ?? ALL_ID), target.id)
   }
 
-  const clearInbox = async () => {
-    const n = view?.messages.length ?? 0
+  /** Marks what is on screen: with a search or the unread filter active, only what they show. */
+  const unreadShown = useMemo(() => (messages ?? []).filter((m) => m.unread === 1).map((m) => m.id), [messages])
+  const markShownRead = async () => {
+    const n = unreadShown.length
     if (n === 0) return
-    if (confirm(`Mark ${n} ${n === 1 ? 'message' : 'messages'} as read?`)) await markInboxRead()
+    if (confirm(`Mark ${n} ${n === 1 ? 'message' : 'messages'} as read?`)) await markRead(unreadShown)
   }
 
   // Header editing state is tied to a stream id, so switching streams implicitly cancels it.
@@ -165,12 +198,42 @@ export default function StreamView({
     if (ok) await deleteStream(stream.id)
   }
 
+  // Fingers and narrow screens get one "Stream actions" button and a bottom sheet, like message cards do.
+  const compactActions = useMediaQuery('(pointer: coarse), (max-width: 760px)')
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const streamActions = [
+    { key: 'rename', icon: Pencil, label: 'Rename', hint: 'Rename stream', onSelect: () => openMode('rename') },
+    {
+      key: 'child',
+      icon: FolderPlus,
+      label: 'Nest new',
+      hint: 'New stream inside this one',
+      onSelect: () => openMode('child'),
+    },
+    {
+      key: 'move',
+      icon: FolderInput,
+      label: 'Move',
+      hint: 'Move stream under another',
+      onSelect: () => openMode('move'),
+    },
+    {
+      key: 'delete',
+      icon: Trash2,
+      label: 'Delete',
+      hint: 'Delete stream',
+      danger: true,
+      onSelect: () => void removeStream(),
+    },
+  ]
+
   // Candidate parents for "Move": any stream that is not this one or below it.
   const blocked = stream ? new Set([stream.id, ...descendantIds(streams, stream.id)]) : new Set()
   const parentOptions = flattenTree(streams).filter((r) => !blocked.has(r.stream.id))
 
   const count = messages?.length ?? 0
-  const total = view?.messages.length ?? 0
+  const total = listed?.length ?? 0
+  const totalLabel = unreadOnly ? `${total} unread` : `${total} ${total === 1 ? 'message' : 'messages'}`
   const filtering = searching && hasQuery
 
   return (
@@ -242,9 +305,7 @@ export default function StreamView({
               ))}
               <h2 className="main-title">{title}</h2>
             </nav>
-            <span className="main-count">
-              {view ? `${total} ${total === 1 ? 'message' : 'messages'}` : ''}
-            </span>
+            <span className="main-count">{view ? totalLabel : ''}</span>
           </>
         )}
 
@@ -260,61 +321,60 @@ export default function StreamView({
               active={searching}
               onClick={searching ? closeSearch : openSearch}
             />
-            {streamId === INBOX_ID && (
-              <IconButton
-                icon={CheckCheck}
-                label="Mark all as read"
-                size={18}
-                tip="bottom"
-                align="end"
-                disabled={total === 0}
-                onClick={clearInbox}
-              />
-            )}
-            {stream && (
-              <>
+            <IconButton
+              icon={ListFilter}
+              label="Unread only"
+              hint={unreadOnly ? 'Show all messages' : 'Show unread only'}
+              size={18}
+              tip="bottom"
+              align="end"
+              active={unreadOnly}
+              onClick={toggleUnreadOnly}
+            />
+            <IconButton
+              icon={CheckCheck}
+              label="Mark all as read"
+              size={18}
+              tip="bottom"
+              align="end"
+              disabled={unreadShown.length === 0}
+              onClick={markShownRead}
+            />
+            {stream &&
+              (compactActions ? (
                 <IconButton
-                  icon={Pencil}
-                  label="Rename"
-                  hint="Rename stream"
-                  size={18}
+                  icon={Ellipsis}
+                  label="Stream actions"
+                  size={20}
                   tip="bottom"
                   align="end"
-                  onClick={() => openMode('rename')}
+                  onClick={() => setSheetOpen(true)}
                 />
-                <IconButton
-                  icon={FolderPlus}
-                  label="Nest new"
-                  hint="New stream inside this one"
-                  size={18}
-                  tip="bottom"
-                  align="end"
-                  onClick={() => openMode('child')}
-                />
-                <IconButton
-                  icon={FolderInput}
-                  label="Move"
-                  hint="Move stream under another"
-                  size={18}
-                  tip="bottom"
-                  align="end"
-                  onClick={() => openMode('move')}
-                />
-                <IconButton
-                  icon={Trash2}
-                  label="Delete"
-                  hint="Delete stream"
-                  size={18}
-                  tip="bottom"
-                  align="end"
-                  danger
-                  onClick={removeStream}
-                />
-              </>
-            )}
+              ) : (
+                streamActions.map(({ key, icon, label, hint, danger, onSelect }) => (
+                  <IconButton
+                    key={key}
+                    icon={icon}
+                    label={label}
+                    hint={hint}
+                    size={18}
+                    tip="bottom"
+                    align="end"
+                    danger={danger}
+                    onClick={onSelect}
+                  />
+                ))
+              ))}
           </div>
         )}
       </header>
+      {sheetOpen && stream && (
+        <ActionSheet
+          title={stream.name}
+          items={streamActions.map((a) => ({ ...a, label: a.hint }))}
+          onClose={() => setSheetOpen(false)}
+        />
+      )}
 
       {searching ? (
         <div className="stream-search" role="search">
@@ -339,7 +399,7 @@ export default function StreamView({
             )}
           </div>
           <span className="muted small stream-search-count">
-            {filtering ? `${count} of ${total}` : `${total} ${total === 1 ? 'message' : 'messages'}`}
+            {filtering ? `${count} of ${total}` : totalLabel}
           </span>
           <IconButton icon={X} label="Done" hint="Close search (Esc)" size={18} align="end" onClick={closeSearch} />
         </div>
@@ -362,7 +422,7 @@ export default function StreamView({
           <div className="empty">
             <p>No matches.</p>
             <p className="muted">
-              Nothing in {title}
+              Nothing{unreadOnly ? ' unread' : ''} in {title}
               {stream && descendantIds(streams, stream.id).length ? ' or its nested streams' : ''} contains
               “{query.trim()}”.
             </p>
@@ -370,12 +430,17 @@ export default function StreamView({
         )}
         {messages && messages.length === 0 && !filtering && (
           <div className="empty">
-            {streamId === INBOX_ID ? (
+            {unreadOnly && streamId === INBOX_ID ? (
               <>
                 <p>You're all caught up.</p>
                 <p className="muted">
                   New messages without a stream land here until you mark them read or move them into one.
                 </p>
+              </>
+            ) : unreadOnly ? (
+              <>
+                <p>No unread messages.</p>
+                <p className="muted">Everything in {title} has been read.</p>
               </>
             ) : (
               <>
@@ -383,7 +448,9 @@ export default function StreamView({
                 <p className="muted">
                   {streamId === ALL_ID
                     ? 'Every message you write shows up here, whatever stream it is filed in.'
-                    : `Write something above to add it to ${title}.`}
+                    : streamId === INBOX_ID
+                      ? 'Messages that are not filed in a stream show up here.'
+                      : `Write something above to add it to ${title}.`}
                 </p>
               </>
             )}
