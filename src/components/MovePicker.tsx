@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { Plus, X } from 'lucide-react'
-import { createStream, flattenTree, moveMessage, type Message, type Stream } from '../db'
+import { ensureStreamPath, flattenTree, moveMessage, type Message, type Stream } from '../db'
 import IconButton from './IconButton'
 
 interface Props {
@@ -18,10 +18,9 @@ export default function MovePicker({ message, streams, onClose }: Props) {
 
   const addNew = async (e: FormEvent) => {
     e.preventDefault()
-    const trimmed = name.trim()
-    if (!trimmed) return
     // A stream created from here is nested under the message's current stream.
-    const id = await createStream(trimmed, current)
+    const id = await ensureStreamPath(name, current)
+    if (!id) return
     await moveMessage(message.id, id)
     setName('')
   }

@@ -4,9 +4,9 @@ import {
   addMessage,
   ALL_ID,
   ancestorsOf,
-  createStream,
   deleteStream,
   descendantIds,
+  ensureStreamPath,
   flattenTree,
   INBOX_ID,
   loadStreamView,
@@ -178,9 +178,10 @@ export default function StreamView({
   }
 
   const commitChild = async () => {
-    const name = field.trim()
     closeMode()
-    if (stream && name) onOpenStream(await createStream(name, stream.id))
+    // A path such as "Projects/Alpha" is created level by level below this stream.
+    const id = stream ? await ensureStreamPath(field, stream.id) : null
+    if (id) onOpenStream(id)
   }
 
   const commitMove = async (parentId: string | null) => {
@@ -261,7 +262,8 @@ export default function StreamView({
               aria-label={mode === 'rename' ? 'Stream name' : 'New stream name'}
               placeholder={mode === 'child' ? `New stream inside ${title}` : undefined}
               value={field}
-              onChange={(e) => setField(e.target.value)}
+              // A name cannot hold "/": it separates the levels of a path.
+              onChange={(e) => setField(mode === 'rename' ? e.target.value.replaceAll('/', '') : e.target.value)}
               onBlur={() => (mode === 'rename' ? commitRename() : closeMode())}
               onKeyDown={(e) => {
                 if (e.key === 'Escape') closeMode()

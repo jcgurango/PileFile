@@ -69,5 +69,18 @@ check('text-only share prefills just the text', true)
 const direct = await page.request.post(PROD_BASE + '/share', { multipart: { text: 'no worker' }, maxRedirects: 0 })
 check('server fallback redirects a bare share POST to the app', direct.status() === 303 && direct.headers()['location'] === '/', `${direct.status()} ${direct.headers()['location']}`)
 
+// View addresses in the built app: the worker answers page loads, the server answers when there is no worker
+await page.goto(PROD_BASE + '/inbox')
+await page.getByRole('heading', { name: 'Inbox', level: 2 }).waitFor()
+check('the built app opens /inbox directly', true)
+await page.getByRole('button', { name: 'New stream' }).click()
+await page.getByLabel('New stream name').fill('Docs/v1.2 notes'); await page.getByLabel('New stream name').press('Enter')
+await page.getByRole('heading', { name: 'v1.2 notes', level: 2 }).waitFor()
+await page.reload()
+await page.getByRole('heading', { name: 'v1.2 notes', level: 2 }).waitFor()
+check('the built app reopens a nested stream address after a refresh', new URL(page.url()).pathname === '/s/Docs/v1.2%20notes', page.url())
+const shell = await page.request.get(PROD_BASE + '/s/Docs/v1.2%20notes')
+check('the server answers a stream address with the app shell', shell.status() === 200 && (await shell.text()).includes('<div id="root">'), String(shell.status()))
+
 check('no console/page errors', errors.length === 0, errors.join(' | '))
 await finish(browser)

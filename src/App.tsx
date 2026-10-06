@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { ALL_ID, db, isVirtual } from './db'
+import { db } from './db'
+import { openView, useAddressSync, useCurrentView } from './route'
 import { SHARE_FLAG, shareText, takeShares, type SharePayload } from './share-store'
 import Sidebar from './components/Sidebar'
 import StreamView from './components/StreamView'
@@ -19,7 +20,6 @@ export interface Focus {
 }
 
 export default function App() {
-  const [streamId, setStreamId] = useState(ALL_ID)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [focus, setFocus] = useState<Focus | null>(null)
   const [query, setQuery] = useState('')
@@ -45,7 +45,7 @@ export default function App() {
       const url = new URL(location.href)
       if (url.searchParams.has(SHARE_FLAG)) {
         url.searchParams.delete(SHARE_FLAG)
-        history.replaceState(null, '', url.pathname + url.search + url.hash)
+        history.replaceState(history.state, '', url.pathname + url.search + url.hash)
       }
     }
     void collect()
@@ -64,10 +64,27 @@ export default function App() {
     [],
   )
 
-  const openStream = useCallback((id: string, messageId?: string) => {
-    setStreamId(id)
-    setFocus(messageId ? { messageId, nonce: Date.now() } : null)
-    setDrawerOpen(false)
+  // The address bar holds the open view, so a refresh or a link lands in the same place.
+  const view = useCurrentView(streams)
+  useAddressSync(streams)
+
+  const openStream = useCallback(
+    (id: string, messageId?: string) => {
+      void openView(id, streams ?? [])
+      setFocus(messageId ? { messageId, nonce: Date.now() } : null)
+      setDrawerOpen(false)
+    },
+    [streams],
+  )
+
+  // Back and Forward change the view without going through openStream.
+  useEffect(() => {
+    const onPop = () => {
+      setFocus(null)
+      setDrawerOpen(false)
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
   }, [])
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), [])
@@ -80,11 +97,11 @@ export default function App() {
     setDrawerOpen(true)
   }, [])
 
-  if (!streams) return null
+  if (!streams || !view) return null
 
-  // If the selected stream disappears (deleted), show All instead.
-  const stream = streams.find((s) => s.id === streamId)
-  const effectiveId = stream || isVirtual(streamId) ? streamId : ALL_ID
+  // An address that names no stream (deleted, or not synced yet) shows All.
+  const effectiveId = view.id
+  const stream = streams.find((s) => s.id === effectiveId)
 
   return (
     <div className="app">

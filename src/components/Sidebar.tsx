@@ -5,7 +5,7 @@ import {
   ALL_ID,
   ancestorsOf,
   byActivity,
-  createStream,
+  ensureStreamPath,
   flattenTree,
   INBOX_ID,
   isVirtual,
@@ -180,9 +180,9 @@ function StreamTree({ streams, selectedId, collapsed, onToggle, onSelect }: Tree
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
-    const trimmed = name.trim()
-    if (!trimmed) return
-    const id = await createStream(trimmed, null)
+    // "Work/Projects" creates both levels, or opens what is already there.
+    const id = await ensureStreamPath(name)
+    if (!id) return
     setName('')
     setAdding(false)
     onSelect(id)
@@ -228,7 +228,7 @@ function StreamTree({ streams, selectedId, collapsed, onToggle, onSelect }: Tree
           <input
             ref={inputRef}
             value={name}
-            placeholder="Stream name"
+            placeholder="Name, or Parent/Child"
             aria-label="New stream name"
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {

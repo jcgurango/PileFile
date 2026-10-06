@@ -262,15 +262,50 @@ export function streamPath(streams: Stream[], id: string): string {
 
 // ---------------------------------------------------------------- streams
 
-export async function createStream(name: string, parentId: string | null = null): Promise<string> {
-  const id = uid()
-  const now = Date.now()
-  const stream: Stream = { id, name: name.trim(), createdAt: now, updatedAt: now, parentId }
-  await db.transaction('rw', db.streams, db.outbox, async () => {
-    await db.streams.add(stream)
-    await enqueue({ type: 'stream.put', stream })
+/** `/` separates the levels of a stream path and cannot be part of a name. */
+export const pathSegments = (path: string): string[] =>
+  path
+    .split('/')
+    .map((name) => name.trim())
+    .filter(Boolean)
+
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+
+/**
+ * The stream called `name` directly under `parentId`, ignoring case. Names are not guaranteed
+ * unique (renames, moves and other devices can collide), so an exact match wins, then the oldest.
+ */
+export function findChild(streams: Stream[], parentId: string | null, name: string): Stream | undefined {
+  const matches = streams
+    .filter((s) => s.parentId === parentId && sameName(s.name, name))
+    .sort((a, b) => Number(b.name === name) - Number(a.name === name) || a.createdAt - b.createdAt)
+  return matches[0]
+}
+
+/**
+ * Creates streams the way `mkdir -p` creates folders: walks "Work/Projects/Alpha" down from
+ * `parentId`, reusing the stream that already has each name and creating the ones that are missing.
+ * Returns the deepest stream's id, or null when the path holds no name.
+ */
+export async function ensureStreamPath(path: string, parentId: string | null = null): Promise<string | null> {
+  const names = pathSegments(path)
+  if (names.length === 0) return null
+  return db.transaction('rw', db.streams, db.outbox, async () => {
+    const streams = await db.streams.toArray()
+    let parent = parentId
+    for (const name of names) {
+      let stream = findChild(streams, parent, name)
+      if (!stream) {
+        const now = Date.now()
+        stream = { id: uid(), name, createdAt: now, updatedAt: now, parentId: parent }
+        await db.streams.add(stream)
+        await enqueue({ type: 'stream.put', stream })
+        streams.push(stream)
+      }
+      parent = stream.id
+    }
+    return parent
   })
-  return id
 }
 
 async function putStream(id: string, patch: Partial<Pick<Stream, 'name' | 'parentId'>>): Promise<void> {
@@ -284,7 +319,8 @@ async function putStream(id: string, patch: Partial<Pick<Stream, 'name' | 'paren
 }
 
 export async function renameStream(id: string, name: string): Promise<void> {
-  await putStream(id, { name: name.trim() })
+  const clean = name.replaceAll('/', '').trim()
+  if (clean) await putStream(id, { name: clean })
 }
 
 /** Re-parents a stream. Refuses to nest a stream under itself or one of its descendants. */

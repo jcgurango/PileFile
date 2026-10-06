@@ -225,8 +225,8 @@ check('deleted stream\'s messages moved to parent', same(await firstWords(), ['P
 await act('Quarterly', 'Pin')
 await page.waitForFunction(() => document.querySelector('.msg .msg-text')?.textContent?.startsWith('Quarterly'))
 await page.reload()
-await page.getByRole('heading', { name: 'All', level: 2 }).waitFor()
-await go('Work')
+await page.getByRole('heading', { name: 'Work', level: 2 }).waitFor()
+check('a reload reopens the stream that was open', true)
 await waitCount(2)
 check('pins and tree persist across reload', same(await firstWords(), ['Quarterly', 'Project']) && (await page.locator('.stream-list .stream-name').allInnerTexts()).join(',') === 'All,Inbox,Work')
 
