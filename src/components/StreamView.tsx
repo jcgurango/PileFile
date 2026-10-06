@@ -4,8 +4,10 @@ import {
   addMessage,
   ALL_ID,
   ancestorsOf,
+  db,
   deleteStream,
   descendantIds,
+  editPage,
   ensureStreamPath,
   flattenTree,
   INBOX_ID,
@@ -13,22 +15,31 @@ import {
   markRead,
   matchesQuery,
   moveStream,
+  pageTexts,
   parseSearch,
   renameStream,
+  setStreamView,
   viewName,
   type Message,
   type Stream,
+  type StreamViewData,
+  type StreamViewMode,
 } from '../db'
+import { appendEmbed, embeddedIds } from '../page'
+import { buildThreads } from '../threads'
 import { useMediaQuery } from '../useMediaQuery'
 import { useTagSuggest } from '../useTagSuggest'
 import {
   CheckCheck,
   ChevronRight,
   Ellipsis,
+  FileText,
   FolderInput,
   FolderPlus,
   ListFilter,
+  ListTree,
   Menu,
+  MessagesSquare,
   Pencil,
   Search,
   Trash2,
@@ -39,7 +50,15 @@ import ActionSheet from './ActionSheet'
 import Composer from './Composer'
 import IconButton from './IconButton'
 import MessageCard from './MessageCard'
+import PageView from './PageView'
 import TagMenu from './TagMenu'
+import ThreadList from './ThreadList'
+
+const VIEWS: Array<{ id: StreamViewMode; label: string; icon: typeof FileText }> = [
+  { id: 'page', label: 'Page', icon: FileText },
+  { id: 'messages', label: 'Messages', icon: MessagesSquare },
+  { id: 'threaded', label: 'Threaded', icon: ListTree },
+]
 
 type HeaderMode = 'rename' | 'child' | 'move'
 
@@ -70,6 +89,28 @@ export default function StreamView({
   const view = useLiveQuery(() => loadStreamView(streamId, streams), [streamId, streams])
   const title = viewName(streamId) ?? stream?.name ?? ''
   const crumbs = stream ? ancestorsOf(streams, stream.id) : []
+
+  // A stream opens in the view it was last left in, on any device. The choice is read once, on arriving:
+  // a change made elsewhere while this stream is open must not switch the view under the reader.
+  const choices = useLiveQuery(() => db.streamViews.toArray().then((rows) => new Map(rows.map((r) => [r.streamId, r.view]))), [])
+  const [latched, setLatched] = useState<{ streamId: string; mode: StreamViewMode } | null>(null)
+  if (choices && latched?.streamId !== streamId) {
+    setLatched({ streamId, mode: (stream && choices.get(streamId)) || 'messages' })
+  }
+  const ready = latched?.streamId === streamId
+  const mode: StreamViewMode = ready && stream ? latched.mode : 'messages'
+  const setMode = (next: StreamViewMode) => {
+    if (!stream || next === mode) return
+    setLatched({ streamId, mode: next })
+    setSearchFor(null)
+    void setStreamView(stream.id, next)
+  }
+  // A message opened from search or a quote has to be on screen, which the page cannot promise.
+  const [seenFocus, setSeenFocus] = useState(focus?.nonce)
+  if (focus?.nonce !== seenFocus) {
+    setSeenFocus(focus?.nonce)
+    if (focus && ready && mode === 'page') setLatched({ streamId, mode: 'messages' })
+  }
 
   // In-stream search is tied to a stream id, so switching streams closes it.
   const [searchFor, setSearchFor] = useState<{ streamId: string; query: string } | null>(null)
@@ -145,6 +186,8 @@ export default function StreamView({
   const submit = async (text: string, attach: File[]) => {
     await addMessage(text, streamId, replyTo?.id ?? null, attach)
     setReplyTo(null)
+    // A message sent from the page is shown where messages live.
+    if (mode === 'page') setMode('messages')
   }
 
   /** Go to a message: stay in this view when it is already shown here, else open its home stream. */
@@ -152,6 +195,51 @@ export default function StreamView({
     const here = view?.messages.some((m) => m.id === target.id)
     onOpenStream(here ? streamId : (target.streamId ?? ALL_ID), target.id)
   }
+
+  // "Add to page" goes to the page of the stream being viewed, or in All and the Inbox to the message's own stream.
+  const pageStreams = stream
+    ? [stream.id]
+    : [...new Set((view?.messages ?? []).flatMap((m) => (m.streamId ? [m.streamId] : [])))].sort()
+  const pageKey = pageStreams.join(',')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const pages = useLiveQuery(() => pageTexts(pageStreams), [pageKey])
+  const onPage = useMemo(() => new Map([...(pages ?? [])].map(([id, text]) => [id, embeddedIds(text)])), [pages])
+  const pageFor = (m: Message) => {
+    const target = stream?.id ?? m.streamId
+    if (!target) return undefined
+    return {
+      has: onPage.get(target)?.has(m.id) ?? false,
+      add: () => void editPage(target, (text) => appendEmbed(text, 'message', m.id)),
+      open: () => (target === streamId ? setMode('page') : onOpenStream(target)),
+    }
+  }
+
+  /** One message card, wherever it is shown: the flat list, a thread, or embedded in the page. */
+  const card = (
+    m: Message,
+    data: StreamViewData,
+    opts: { nested?: boolean; embedded?: boolean; onDissolve?: () => void } = {},
+  ) => (
+    <MessageCard
+      key={m.id}
+      message={m}
+      streams={streams}
+      currentStreamId={streamId}
+      pins={data.pinsByMessage.get(m.id) ?? []}
+      terms={filtering ? parsed.highlights : undefined}
+      focus={focus?.messageId === m.id ? focus : null}
+      replyTarget={m.replyToId ? (data.replyTargets.get(m.replyToId) ?? null) : undefined}
+      attachments={data.attachmentsByMessage.get(m.id) ?? []}
+      onOpenStream={onOpenStream}
+      onTagClick={onTagClick}
+      onReply={setReplyTo}
+      onJumpTo={jumpTo}
+      hideQuote={opts.nested}
+      unclamped={opts.embedded}
+      page={opts.embedded ? undefined : pageFor(m)}
+      onDissolve={opts.onDissolve}
+    />
+  )
 
   /** Marks what is on screen: with a search or the unread filter active, only what they show. */
   const unreadShown = useMemo(() => (messages ?? []).filter((m) => m.unread === 1).map((m) => m.id), [messages])
@@ -163,7 +251,7 @@ export default function StreamView({
 
   // Header editing state is tied to a stream id, so switching streams implicitly cancels it.
   const [modeFor, setModeFor] = useState<{ streamId: string; mode: HeaderMode } | null>(null)
-  const mode = modeFor?.streamId === streamId ? modeFor.mode : null
+  const headerMode = modeFor?.streamId === streamId ? modeFor.mode : null
   const [field, setField] = useState('')
   const openMode = (m: HeaderMode) => {
     setField(m === 'rename' && stream ? stream.name : '')
@@ -194,7 +282,7 @@ export default function StreamView({
     const parent = streams.find((s) => s.id === stream.parentId)
     const dest = parent ? `"${parent.name}"` : 'the top level'
     const ok = confirm(
-      `Delete the stream "${stream.name}"?\n\nIts messages and any streams nested inside it move up to ${dest}.`,
+      `Delete the stream "${stream.name}"?\n\nIts messages and any streams nested inside it move up to ${dest}. Its page is deleted with it.`,
     )
     if (ok) await deleteStream(stream.id)
   }
@@ -236,6 +324,9 @@ export default function StreamView({
   const total = listed?.length ?? 0
   const totalLabel = unreadOnly ? `${total} unread` : `${total} ${total === 1 ? 'message' : 'messages'}`
   const filtering = searching && hasQuery
+  // Search results and the unread filter are flat lists; threads only make sense with every message present.
+  const threaded = mode === 'threaded' && !filtering && !unreadOnly
+  const threads = threaded && messages ? buildThreads(messages) : []
 
   return (
     <main className="main">
@@ -249,28 +340,28 @@ export default function StreamView({
           onClick={onOpenDrawer}
         />
 
-        {mode === 'rename' || mode === 'child' ? (
+        {headerMode === 'rename' || headerMode === 'child' ? (
           <form
             className="rename"
             onSubmit={(e) => {
               e.preventDefault()
-              void (mode === 'rename' ? commitRename() : commitChild())
+              void (headerMode === 'rename' ? commitRename() : commitChild())
             }}
           >
             <input
               autoFocus
-              aria-label={mode === 'rename' ? 'Stream name' : 'New stream name'}
-              placeholder={mode === 'child' ? `New stream inside ${title}` : undefined}
+              aria-label={headerMode === 'rename' ? 'Stream name' : 'New stream name'}
+              placeholder={headerMode === 'child' ? `New stream inside ${title}` : undefined}
               value={field}
               // A name cannot hold "/": it separates the levels of a path.
-              onChange={(e) => setField(mode === 'rename' ? e.target.value.replaceAll('/', '') : e.target.value)}
-              onBlur={() => (mode === 'rename' ? commitRename() : closeMode())}
+              onChange={(e) => setField(headerMode === 'rename' ? e.target.value.replaceAll('/', '') : e.target.value)}
+              onBlur={() => (headerMode === 'rename' ? commitRename() : closeMode())}
               onKeyDown={(e) => {
                 if (e.key === 'Escape') closeMode()
               }}
             />
           </form>
-        ) : mode === 'move' ? (
+        ) : headerMode === 'move' ? (
           <div className="rename move-row">
             <label className="muted small" htmlFor="move-parent">
               Move {title} under
@@ -311,37 +402,41 @@ export default function StreamView({
           </>
         )}
 
-        {mode === null && (
+        {headerMode === null && (
           <div className="head-actions">
-            <IconButton
-              icon={Search}
-              label="Search"
-              hint={`Search in ${title}`}
-              size={18}
-              tip="bottom"
-              align="end"
-              active={searching}
-              onClick={searching ? closeSearch : openSearch}
-            />
-            <IconButton
-              icon={ListFilter}
-              label="Unread only"
-              hint={unreadOnly ? 'Show all messages' : 'Show unread only'}
-              size={18}
-              tip="bottom"
-              align="end"
-              active={unreadOnly}
-              onClick={toggleUnreadOnly}
-            />
-            <IconButton
-              icon={CheckCheck}
-              label="Mark all as read"
-              size={18}
-              tip="bottom"
-              align="end"
-              disabled={unreadShown.length === 0}
-              onClick={markShownRead}
-            />
+            {mode !== 'page' && (
+              <>
+                <IconButton
+                  icon={Search}
+                  label="Search"
+                  hint={`Search in ${title}`}
+                  size={18}
+                  tip="bottom"
+                  align="end"
+                  active={searching}
+                  onClick={searching ? closeSearch : openSearch}
+                />
+                <IconButton
+                  icon={ListFilter}
+                  label="Unread only"
+                  hint={unreadOnly ? 'Show all messages' : 'Show unread only'}
+                  size={18}
+                  tip="bottom"
+                  align="end"
+                  active={unreadOnly}
+                  onClick={toggleUnreadOnly}
+                />
+                <IconButton
+                  icon={CheckCheck}
+                  label="Mark all as read"
+                  size={18}
+                  tip="bottom"
+                  align="end"
+                  disabled={unreadShown.length === 0}
+                  onClick={markShownRead}
+                />
+              </>
+            )}
             {stream &&
               (compactActions ? (
                 <IconButton
@@ -376,6 +471,23 @@ export default function StreamView({
           items={streamActions.map((a) => ({ ...a, label: a.hint }))}
           onClose={() => setSheetOpen(false)}
         />
+      )}
+
+      {stream && (
+        <div className="view-tabs" role="tablist" aria-label="View">
+          {VIEWS.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={mode === id}
+              className={`view-tab${mode === id ? ' selected' : ''}`}
+              onClick={() => setMode(id)}
+            >
+              <Icon size={15} strokeWidth={1.75} aria-hidden="true" />
+              {label}
+            </button>
+          ))}
+        </div>
       )}
 
       {searching ? (
@@ -419,63 +531,62 @@ export default function StreamView({
         />
       )}
 
-      <div className="messages">
-        {messages && messages.length === 0 && filtering && (
-          <div className="empty">
-            <p>No matches.</p>
-            <p className="muted">
-              Nothing{unreadOnly ? ' unread' : ''} in {title}
-              {stream && descendantIds(streams, stream.id).length ? ' or its nested streams' : ''} contains
-              “{query.trim()}”.
-            </p>
-          </div>
-        )}
-        {messages && messages.length === 0 && !filtering && (
-          <div className="empty">
-            {unreadOnly && streamId === INBOX_ID ? (
-              <>
-                <p>You're all caught up.</p>
-                <p className="muted">
-                  New messages without a stream land here until you mark them read or move them into one.
-                </p>
-              </>
-            ) : unreadOnly ? (
-              <>
-                <p>No unread messages.</p>
-                <p className="muted">Everything in {title} has been read.</p>
-              </>
+      {!ready ? (
+        <div className="messages" />
+      ) : mode === 'page' && stream ? (
+        <PageView
+          stream={stream}
+          onJumpTo={jumpTo}
+          renderCard={({ message, data, onDissolve, nested }) => card(message, data, { embedded: true, nested, onDissolve })}
+        />
+      ) : (
+        <div className={`messages${threaded ? ' threaded' : ''}`}>
+          {messages && messages.length === 0 && filtering && (
+            <div className="empty">
+              <p>No matches.</p>
+              <p className="muted">
+                Nothing{unreadOnly ? ' unread' : ''} in {title}
+                {stream && descendantIds(streams, stream.id).length ? ' or its nested streams' : ''} contains
+                “{query.trim()}”.
+              </p>
+            </div>
+          )}
+          {messages && messages.length === 0 && !filtering && (
+            <div className="empty">
+              {unreadOnly && streamId === INBOX_ID ? (
+                <>
+                  <p>You're all caught up.</p>
+                  <p className="muted">
+                    New messages without a stream land here until you mark them read or move them into one.
+                  </p>
+                </>
+              ) : unreadOnly ? (
+                <>
+                  <p>No unread messages.</p>
+                  <p className="muted">Everything in {title} has been read.</p>
+                </>
+              ) : (
+                <>
+                  <p>Nothing here yet.</p>
+                  <p className="muted">
+                    {streamId === ALL_ID
+                      ? 'Every message you write shows up here, whatever stream it is filed in.'
+                      : streamId === INBOX_ID
+                        ? 'Messages that are not filed in a stream show up here.'
+                        : `Write something above to add it to ${title}.`}
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+          {view &&
+            (threaded ? (
+              <ThreadList nodes={threads} renderCard={(m, nested) => card(m, view, { nested })} />
             ) : (
-              <>
-                <p>Nothing here yet.</p>
-                <p className="muted">
-                  {streamId === ALL_ID
-                    ? 'Every message you write shows up here, whatever stream it is filed in.'
-                    : streamId === INBOX_ID
-                      ? 'Messages that are not filed in a stream show up here.'
-                      : `Write something above to add it to ${title}.`}
-                </p>
-              </>
-            )}
-          </div>
-        )}
-        {messages?.map((m) => (
-          <MessageCard
-            key={m.id}
-            message={m}
-            streams={streams}
-            currentStreamId={streamId}
-            pins={view?.pinsByMessage.get(m.id) ?? []}
-            terms={filtering ? parsed.highlights : undefined}
-            focus={focus?.messageId === m.id ? focus : null}
-            replyTarget={m.replyToId ? (view?.replyTargets.get(m.replyToId) ?? null) : undefined}
-            attachments={view?.attachmentsByMessage.get(m.id) ?? []}
-            onOpenStream={onOpenStream}
-            onTagClick={onTagClick}
-            onReply={setReplyTo}
-            onJumpTo={jumpTo}
-          />
-        ))}
-      </div>
+              messages?.map((m) => card(m, view))
+            ))}
+        </div>
+      )}
     </main>
   )
 }

@@ -95,6 +95,26 @@ const MIGRATIONS: string[] = [
     at INTEGER NOT NULL
   );
   `,
+  // v2: a page per stream (kept as versions, like message text) and the view last open in each stream
+  `
+  CREATE TABLE page_versions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    stream_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX page_versions_user ON page_versions(user_id);
+  CREATE INDEX page_versions_stream ON page_versions(stream_id);
+
+  CREATE TABLE stream_views (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    stream_id TEXT NOT NULL,
+    view TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, stream_id)
+  );
+  `,
 ]
 
 export function openDb(path: string): Db {

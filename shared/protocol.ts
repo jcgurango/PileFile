@@ -9,7 +9,7 @@
  *   Clients remember the last `seq` they applied and pull everything after it.
  */
 
-export const PROTOCOL_VERSION = 1
+export const PROTOCOL_VERSION = 2
 
 // ----------------------------------------------------------------- rows
 
@@ -58,6 +58,23 @@ export interface AttachmentRow {
   order: number
 }
 
+/** One saved state of a stream's page. The newest by timestamp is the page; all are kept. */
+export interface PageVersionRow {
+  id: string
+  streamId: string
+  text: string
+  createdAt: number
+}
+
+export type StreamViewMode = 'page' | 'messages' | 'threaded'
+
+/** Which of a stream's views was open last. The newest `at` wins. */
+export interface StreamViewRow {
+  streamId: string
+  view: StreamViewMode
+  at: number
+}
+
 // -------------------------------------------------------------- actions
 
 /** A client mutation. `id` makes it idempotent; `at` is the client clock when it happened. */
@@ -72,6 +89,8 @@ export type ActionBody =
   | { type: 'pin.put'; pin: PinRow }
   | { type: 'pin.remove'; messageId: string; streamId: string }
   | { type: 'read.all' }
+  | { type: 'page.edit'; version: PageVersionRow }
+  | { type: 'view.set'; view: StreamViewRow }
 
 export type Action = ActionBody & { id: string; at: number }
 
@@ -89,6 +108,8 @@ export type ChangeBody =
   | { op: 'attachment.put'; data: AttachmentRow }
   | { op: 'attachment.delete'; id: string }
   | { op: 'read.all'; at: number }
+  | { op: 'page.put'; data: PageVersionRow }
+  | { op: 'view.put'; data: StreamViewRow }
 
 export type Change = ChangeBody & { seq: number }
 

@@ -1,7 +1,9 @@
 import Dexie, { type EntityTable } from 'dexie'
 import { extractTags, parseQuery, type ParsedQuery } from './tags'
 import { kindOf, makeThumbnail } from './attachments'
-import type { Action, ActionBody } from '../shared/protocol'
+import type { Action, ActionBody, StreamViewMode } from '../shared/protocol'
+
+export type { StreamViewMode }
 
 /**
  * Two virtual views sit above the streams. IndexedDB keys cannot be null, so these
@@ -102,6 +104,21 @@ export interface Version {
   createdAt: number
 }
 
+/** One saved state of a stream's page. The newest is the page; all are kept, as with message text. */
+export interface PageVersion {
+  id: string
+  streamId: string
+  text: string
+  createdAt: number
+}
+
+/** Which of a stream's views (Page, Messages, Threaded) was open last, on any device. */
+export interface StreamViewChoice {
+  streamId: string
+  view: StreamViewMode
+  at: number
+}
+
 /**
  * A pin is scoped to a viewing context: a stream id, or INBOX_ID / ALL_ID for those views.
  * A message sorts to the top of a view only when it has a pin for that exact context.
@@ -124,6 +141,8 @@ class PileFileDB extends Dexie {
   thumbs!: EntityTable<ThumbRow, 'id'>
   outbox!: Dexie.Table<OutboxItem, number>
   meta!: EntityTable<MetaRow, 'key'>
+  pageVersions!: EntityTable<PageVersion, 'id'>
+  streamViews!: EntityTable<StreamViewChoice, 'streamId'>
 
   constructor() {
     super('pilefile')
@@ -158,6 +177,11 @@ class PileFileDB extends Dexie {
             if (s.updatedAt === undefined) s.updatedAt = s.createdAt
           }),
       )
+    // v11: a page per stream, and the view last open in each stream. New tables only; nothing to convert.
+    this.version(11).stores({
+      pageVersions: 'id, streamId',
+      streamViews: 'streamId',
+    })
   }
 }
 
@@ -333,11 +357,12 @@ export async function moveStream(id: string, parentId: string | null): Promise<v
 
 /**
  * Deletes a stream. Its child streams and its own messages move up to its parent
- * (to the top level / no stream when it was top level). Pins in its context are dropped.
+ * (to the top level / no stream when it was top level). Pins in its context are dropped,
+ * and its page goes with it.
  * The cascade is sent as explicit actions so every device applies the same result.
  */
 export async function deleteStream(id: string): Promise<void> {
-  await db.transaction('rw', db.streams, db.messages, db.pins, db.outbox, async () => {
+  await db.transaction('rw', [db.streams, db.messages, db.pins, db.pageVersions, db.streamViews, db.outbox], async () => {
     const stream = await db.streams.get(id)
     if (!stream) return
     const parentId = stream.parentId
@@ -355,8 +380,70 @@ export async function deleteStream(id: string): Promise<void> {
       await db.pins.delete([pin.messageId, pin.streamId])
       await enqueue({ type: 'pin.remove', messageId: pin.messageId, streamId: pin.streamId })
     }
+    await dropStreamExtras(id)
     await db.streams.delete(id)
     await enqueue({ type: 'stream.delete', streamId: id })
+  })
+}
+
+/** A deleted stream's page and view choice. Also used when the deletion arrives from the server. */
+export async function dropStreamExtras(streamId: string): Promise<void> {
+  await db.pageVersions.where('streamId').equals(streamId).delete()
+  await db.streamViews.delete(streamId)
+}
+
+// ------------------------------------------------------------------ pages
+
+/** Every saved state of a stream's page, newest first. Index 0 is the page. */
+export function pageVersionsOf(streamId: string): Promise<PageVersion[]> {
+  return db.pageVersions.where('streamId').equals(streamId).reverse().sortBy('createdAt')
+}
+
+export async function pageText(streamId: string): Promise<string> {
+  return (await pageVersionsOf(streamId))[0]?.text ?? ''
+}
+
+/** Current page text of each of the given streams; streams without a page are left out. */
+export async function pageTexts(streamIds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  for (const id of streamIds) {
+    const latest = (await pageVersionsOf(id))[0]
+    if (latest) out.set(id, latest.text)
+  }
+  return out
+}
+
+/**
+ * The editor's autosave. A burst of typing keeps one version id and rewrites that version, so
+ * history gains a step per burst, not per pause; the timestamp moves forward so it stays newest.
+ */
+export async function savePage(streamId: string, text: string, versionId: string): Promise<void> {
+  await db.transaction('rw', db.pageVersions, db.outbox, async () => {
+    if (text === (await pageText(streamId))) return
+    const version: PageVersion = { id: versionId, streamId, text, createdAt: Date.now() }
+    await db.pageVersions.put(version)
+    await enqueue({ type: 'page.edit', version })
+  })
+}
+
+/** Changes the page from outside the editor, as a new version. `change` gets the current text, so edits compose. */
+export async function editPage(streamId: string, change: (current: string) => string): Promise<void> {
+  await db.transaction('rw', db.pageVersions, db.outbox, async () => {
+    const current = await pageText(streamId)
+    const text = change(current)
+    if (text === current) return
+    const version: PageVersion = { id: uid(), streamId, text, createdAt: Date.now() }
+    await db.pageVersions.add(version)
+    await enqueue({ type: 'page.edit', version })
+  })
+}
+
+/** Remembers the view a stream was left in, for the next visit on this or any other device. */
+export async function setStreamView(streamId: string, view: StreamViewMode): Promise<void> {
+  const choice: StreamViewChoice = { streamId, view, at: Date.now() }
+  await db.transaction('rw', db.streamViews, db.outbox, async () => {
+    await db.streamViews.put(choice)
+    await enqueue({ type: 'view.set', view: choice })
   })
 }
 
@@ -629,6 +716,31 @@ export async function loadStreamView(streamId: string, streams: Stream[]): Promi
             .anyOf([streamId, ...descendantIds(streams, streamId)])
             .toArray()
 
+  return assembleView(messages, streamId)
+}
+
+/**
+ * The messages a page embeds: the ones named directly, and for each thread root everything
+ * replied under it, wherever those replies are filed. In no particular order.
+ */
+export async function loadEmbedded(ids: string[], threadRoots: string[], streamId: string): Promise<StreamViewData> {
+  const found = new Map<string, Message>()
+  for (const m of await db.messages.bulkGet([...new Set([...ids, ...threadRoots])])) if (m) found.set(m.id, m)
+  let frontier = threadRoots.filter((id) => found.has(id))
+  while (frontier.length) {
+    const replies = await db.messages.where('replyToId').anyOf(frontier).toArray()
+    frontier = []
+    for (const r of replies) {
+      if (found.has(r.id)) continue
+      found.set(r.id, r)
+      frontier.push(r.id)
+    }
+  }
+  return assembleView([...found.values()], streamId)
+}
+
+/** Sorts messages for `streamId` (pinned there first, then newest) and gathers what their cards need. */
+async function assembleView(messages: Message[], streamId: string): Promise<StreamViewData> {
   const pins = await db.pins
     .where('messageId')
     .anyOf(messages.map((m) => m.id))

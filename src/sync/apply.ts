@@ -1,5 +1,5 @@
 import type { Action, Change, MessageRow } from '../../shared/protocol'
-import { attachmentNames, db, indexTags, purgeMessageLocally, wordsFor, type Message } from '../db'
+import { attachmentNames, db, dropStreamExtras, indexTags, purgeMessageLocally, wordsFor, type Message } from '../db'
 
 /**
  * Applies a page of server changes to the local database. Writes go straight to the
@@ -9,7 +9,18 @@ export async function applyChanges(changes: Change[]): Promise<void> {
   if (changes.length === 0) return
   await db.transaction(
     'rw',
-    [db.streams, db.messages, db.versions, db.pins, db.tags, db.attachments, db.files, db.thumbs],
+    [
+      db.streams,
+      db.messages,
+      db.versions,
+      db.pins,
+      db.tags,
+      db.attachments,
+      db.files,
+      db.thumbs,
+      db.pageVersions,
+      db.streamViews,
+    ],
     async () => {
       const reindex = new Set<string>()
       for (const c of changes) {
@@ -18,8 +29,21 @@ export async function applyChanges(changes: Change[]): Promise<void> {
             await db.streams.put(c.data)
             break
           case 'stream.delete':
+            await dropStreamExtras(c.id)
             await db.streams.delete(c.id)
             break
+          case 'page.put': {
+            // The same version can arrive more than once while it is being typed into; keep the newest.
+            const local = await db.pageVersions.get(c.data.id)
+            if (!local || c.data.createdAt >= local.createdAt) await db.pageVersions.put(c.data)
+            break
+          }
+          case 'view.put': {
+            // An older choice arriving late (this device's own echo, say) must not undo a newer one.
+            const local = await db.streamViews.get(c.data.streamId)
+            if (!local || c.data.at >= local.at) await db.streamViews.put(c.data)
+            break
+          }
           case 'message.put':
             await putMessage(c.data)
             reindex.add(c.data.id)
@@ -121,5 +145,7 @@ export async function buildInitialActions(): Promise<Action[]> {
     if (m.unread === 0) out.push({ id: uid(), at, type: 'message.read', messageId: m.id, unread: 0 })
   }
   for (const p of await db.pins.toArray()) out.push({ id: uid(), at, type: 'pin.put', pin: p })
+  for (const v of await db.pageVersions.toArray()) out.push({ id: uid(), at, type: 'page.edit', version: v })
+  for (const v of await db.streamViews.toArray()) out.push({ id: uid(), at, type: 'view.set', view: v })
   return out
 }

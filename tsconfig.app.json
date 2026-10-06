@@ -22,6 +22,6 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "shared", "lab"],
+  "include": ["src", "shared"],
   "exclude": ["src/sw.ts"]
 }

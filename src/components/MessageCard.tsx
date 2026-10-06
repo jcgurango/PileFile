@@ -18,7 +18,10 @@ import { formatFull, formatTimestamp } from '../format'
 import {
   ArrowUpToLine,
   Check,
+  Copy,
   Ellipsis,
+  FileCheck,
+  FilePlus,
   FolderInput,
   History,
   Mail,
@@ -27,6 +30,7 @@ import {
   PinOff,
   Reply,
   Trash2,
+  Unlink,
   X,
 } from 'lucide-react'
 import { autosize } from '../autosize'
@@ -61,6 +65,14 @@ interface Props {
   onTagClick: (tag: string) => void
   onReply: (message: Message) => void
   onJumpTo: (message: Message) => void
+  /** No Show more: the whole text is always shown (messages embedded in a page). */
+  unclamped?: boolean
+  /** Leave out the quotation of the replied-to message, when that message is shown right above (threads). */
+  hideQuote?: boolean
+  /** The page this message can be added to, when there is one: whether it is on it already, and how to add or go there. */
+  page?: { has: boolean; add: () => void; open: () => void }
+  /** Given for a message embedded in a page: turns the embed into page text. */
+  onDissolve?: () => void
 }
 
 export default function MessageCard({
@@ -76,6 +88,10 @@ export default function MessageCard({
   onTagClick,
   onReply,
   onJumpTo,
+  unclamped,
+  hideQuote,
+  page,
+  onDissolve,
 }: Props) {
   const [panel, setPanel] = useState<Panel>('none')
   const [draft, setDraft] = useState(message.text)
@@ -95,6 +111,17 @@ export default function MessageCard({
   // Fingers and narrow screens get one "More" button and a bottom sheet instead of a row of small icons.
   const compactActions = useMediaQuery('(pointer: coarse), (max-width: 760px)')
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(message.text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard access denied or unavailable: nothing was copied, so say nothing.
+    }
+  }
 
   // Scroll into view and glow briefly when opened from a search result.
   useEffect(() => {
@@ -210,6 +237,31 @@ export default function MessageCard({
       active: panel === 'move',
       onSelect: () => toggle('move'),
     },
+    ...(page
+      ? [
+          page.has
+            ? { key: 'onpage', icon: FileCheck, label: 'On page', hint: 'On the page: go to it', active: true, onSelect: page.open }
+            : { key: 'addpage', icon: FilePlus, label: 'Add to page', hint: "Add to this stream's page", onSelect: page.add },
+        ]
+      : []),
+    {
+      key: 'copy',
+      icon: copied ? Check : Copy,
+      label: copied ? 'Copied' : 'Copy',
+      hint: copied ? 'Copied' : 'Copy Markdown to clipboard',
+      onSelect: () => void copy(),
+    },
+    ...(onDissolve
+      ? [
+          {
+            key: 'dissolve',
+            icon: Unlink,
+            label: 'Dissolve',
+            hint: 'Dissolve: write the text into the page, keep a summary',
+            onSelect: onDissolve,
+          },
+        ]
+      : []),
     ...(edited
       ? [
           {
@@ -227,13 +279,22 @@ export default function MessageCard({
     { key: 'delete', icon: Trash2, label: 'Delete', danger: true, onSelect: () => void remove() },
   ]
 
+  const body = (
+    <MessageBody
+      text={viewing ? viewing.text : message.text}
+      terms={terms}
+      onChange={showingOld ? undefined : (next) => editMessage(message.id, next)}
+      onTagClick={onTagClick}
+    />
+  )
+
   return (
     <article
       ref={cardRef}
       data-id={message.id}
       className={`msg${pins.length ? ' pinned' : ''}${message.unread ? ' unread' : ''}${showingOld ? ' viewing-old' : ''}`}
     >
-      {message.replyToId && (
+      {message.replyToId && !hideQuote && (
         <Quote
           message={replyTarget ?? null}
           onOpen={replyTarget ? () => onJumpTo(replyTarget) : undefined}
@@ -267,14 +328,7 @@ export default function MessageCard({
       ) : (
         (viewing ? viewing.text : message.text).length > 0 && (
           <div className="msg-text">
-            <Clamp expanded={expanded} onExpandedChange={setExpanded}>
-              <MessageBody
-                text={viewing ? viewing.text : message.text}
-                terms={terms}
-                onChange={showingOld ? undefined : (next) => editMessage(message.id, next)}
-                onTagClick={onTagClick}
-              />
-            </Clamp>
+            {unclamped ? body : <Clamp expanded={expanded} onExpandedChange={setExpanded}>{body}</Clamp>}
           </div>
         )
       )}

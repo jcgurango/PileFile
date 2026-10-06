@@ -10,6 +10,7 @@ import type {
   StreamRow,
   SyncResponse,
   VersionRow,
+  StreamViewMode,
 } from '../../shared/protocol.ts'
 
 const PAGE = 500
@@ -90,6 +91,10 @@ const toAttachment = (r: Row): AttachmentRow => ({
 export function currentSeq(db: Db, userId: string): number {
   const r = db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM changes WHERE user_id = ?').get(userId) as { seq: number }
   return r.seq
+}
+
+function liveStream(db: Db, userId: string, id: string): boolean {
+  return Boolean(db.prepare('SELECT 1 FROM streams WHERE id = ? AND user_id = ? AND deleted_at IS NULL').get(id, userId))
 }
 
 function liveMessage(db: Db, userId: string, id: string): Row | undefined {
@@ -253,6 +258,33 @@ function applyOne(db: Db, userId: string, a: Action, removed: string[]): ChangeB
       return res.changes ? [{ op: 'pin.remove', messageId: a.messageId, streamId: a.streamId }] : []
     }
 
+    // Pages and view choices belong to a stream; both are dropped by clients when the stream is deleted.
+    case 'page.edit': {
+      // An upsert: the editor rewrites the version it is typing into, and the newest timestamp wins.
+      const v = a.version
+      if (!liveStream(db, userId, v.streamId)) return []
+      const res = db
+        .prepare(
+          `INSERT INTO page_versions (id, user_id, stream_id, text, created_at) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (id) DO UPDATE SET text = excluded.text, created_at = excluded.created_at
+           WHERE page_versions.user_id = excluded.user_id AND excluded.created_at >= page_versions.created_at`,
+        )
+        .run(v.id, userId, v.streamId, v.text, v.createdAt)
+      return res.changes ? [{ op: 'page.put', data: v }] : []
+    }
+
+    case 'view.set': {
+      const v = a.view
+      if (!liveStream(db, userId, v.streamId)) return []
+      const res = db
+        .prepare(
+          `INSERT INTO stream_views (user_id, stream_id, view, at) VALUES (?, ?, ?, ?)
+           ON CONFLICT (user_id, stream_id) DO UPDATE SET view = excluded.view, at = excluded.at WHERE excluded.at >= stream_views.at`,
+        )
+        .run(userId, v.streamId, v.view, v.at)
+      return res.changes ? [{ op: 'view.put', data: v }] : []
+    }
+
     case 'read.all': {
       db.prepare('UPDATE messages SET unread = 0 WHERE user_id = ? AND deleted_at IS NULL AND unread = 1').run(userId)
       return [{ op: 'read.all', at: a.at }]
@@ -280,8 +312,20 @@ export function pull(db: Db, userId: string, since: number): SyncResponse {
 function snapshot(db: Db, userId: string): SyncResponse {
   const seq = currentSeq(db, userId)
   const changes: Change[] = []
+  const streams = new Set<string>()
   for (const r of db.prepare('SELECT * FROM streams WHERE user_id = ? AND deleted_at IS NULL').all(userId) as Row[]) {
+    streams.add(r.id as string)
     changes.push({ seq, op: 'stream.put', data: toStream(r) })
+  }
+  for (const r of db.prepare('SELECT * FROM page_versions WHERE user_id = ?').all(userId) as Row[]) {
+    if (!streams.has(r.stream_id as string)) continue
+    const data = { id: r.id as string, streamId: r.stream_id as string, text: r.text as string, createdAt: r.created_at as number }
+    changes.push({ seq, op: 'page.put', data })
+  }
+  for (const r of db.prepare('SELECT * FROM stream_views WHERE user_id = ?').all(userId) as Row[]) {
+    if (!streams.has(r.stream_id as string)) continue
+    const data = { streamId: r.stream_id as string, view: r.view as StreamViewMode, at: r.at as number }
+    changes.push({ seq, op: 'view.put', data })
   }
   const counts = new Map<string, number>()
   for (const r of db
