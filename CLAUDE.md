@@ -23,6 +23,10 @@ shared/protocol.ts   Row types, Action and Change unions, API shapes. Imported b
 server/src/          Hono API: db.ts (SQLite + migrations), auth.ts, sync.ts (apply/pull/change log), app.ts, cli.ts.
 e2e/                 Playwright specs (NN-*.mjs) + run.mjs runner + fixtures. Plain scripts, PASS/FAIL lines.
 scripts/icons.mjs    Renders public/icons/*.png from public/pilefile-icon.svg.
+lab/                 Dev-only playground at /lab/ (trailing slash) for the "one page of notes" editor experiment:
+                     CodeMirror as one document with per-note sections (single.ts) vs one editor per note
+                     (Multi.tsx), on an in-memory store. Not part of the build. `node lab/check.mjs` smoke-tests it
+                     against a running dev server. CodeMirror is a dev dependency for this alone, for now.
 ```
 
 ## Commands
