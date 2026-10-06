@@ -6,12 +6,12 @@ import type { Action, ActionBody } from '../shared/protocol'
 /**
  * Two virtual views sit above the streams. IndexedDB keys cannot be null, so these
  * sentinels also serve as pin contexts for the two views.
- * - Inbox: every unread message, across all streams. New and edited messages land here
- *   until marked read. The triage zone.
- * - All: every message, read or not.
+ * - All: every message, read or not. The default view.
+ * - Inbox: unread messages that are not filed in any stream. They leave when marked read
+ *   or moved into a stream. The triage zone.
  */
-export const INBOX_ID = 'inbox'
 export const ALL_ID = 'all'
+export const INBOX_ID = 'inbox'
 export const isVirtual = (id: string) => id === INBOX_ID || id === ALL_ID
 export const viewName = (id: string) => (id === INBOX_ID ? 'Inbox' : id === ALL_ID ? 'All' : null)
 
@@ -34,7 +34,7 @@ export interface Message {
   updatedAt: number
   /** The one stream this message is filed in, or null when it is not filed anywhere. */
   streamId: string | null
-  /** 1 while the message sits in the Inbox. Set on creation; cleared by marking read. */
+  /** 1 until marked read. Set on creation. An unread message with no stream sits in the Inbox. */
   unread: 0 | 1
   /** Search tokens of the current text. Multi-entry indexed. */
   words: string[]
@@ -103,7 +103,7 @@ export interface Version {
 }
 
 /**
- * A pin is scoped to a viewing context: a stream id, or INBOX_ID for the Inbox.
+ * A pin is scoped to a viewing context: a stream id, or INBOX_ID / ALL_ID for those views.
  * A message sorts to the top of a view only when it has a pin for that exact context.
  * Having a pin anywhere is enough to show the pinned styling.
  */
@@ -413,17 +413,19 @@ export async function editMessage(id: string, text: string): Promise<void> {
 
 /**
  * Files a message in one stream (or none). Pins survive only in contexts that still
- * show the message afterwards: the Inbox, the new stream, and that stream's ancestors.
+ * show the message afterwards: All, the new stream and its ancestors, or the Inbox when unfiled.
  */
 export async function moveMessage(id: string, streamId: string | null): Promise<void> {
   await db.transaction('rw', [db.messages, db.streams, db.pins, db.outbox], async () => {
     await db.messages.update(id, { streamId })
     await enqueue({ type: 'message.move', messageId: id, streamId })
     const streams = await db.streams.toArray()
-    const keep = new Set<string>([INBOX_ID, ALL_ID])
+    const keep = new Set<string>([ALL_ID])
     if (streamId) {
       keep.add(streamId)
       for (const a of ancestorsOf(streams, streamId)) keep.add(a.id)
+    } else {
+      keep.add(INBOX_ID)
     }
     const stale = await db.pins
       .where('messageId')
@@ -519,16 +521,21 @@ export async function setRead(id: string, read: boolean): Promise<void> {
   })
 }
 
-export function unreadCount(): Promise<number> {
-  return db.messages.where('unread').equals(1).count()
-}
+/** The Inbox: unread messages with no stream. null cannot be indexed, hence the filter. */
+const inboxMessages = () => db.messages.where('unread').equals(1).filter((m) => m.streamId === null)
 
-/** Clears the Inbox. Returns how many messages were marked. */
-export async function markAllRead(): Promise<number> {
+/**
+ * Clears the Inbox. Unread messages filed in streams are left alone, so this is sent as
+ * one explicit action per message rather than `read.all`. Returns how many were marked.
+ */
+export async function markInboxRead(): Promise<number> {
   return db.transaction('rw', db.messages, db.outbox, async () => {
-    const n = await db.messages.where('unread').equals(1).modify({ unread: 0 })
-    await enqueue({ type: 'read.all' })
-    return n
+    const ids = await inboxMessages().primaryKeys()
+    for (const id of ids) {
+      await db.messages.update(id, { unread: 0 })
+      await enqueue({ type: 'message.read', messageId: id, unread: 0 })
+    }
+    return ids.length
   })
 }
 
@@ -564,7 +571,7 @@ export interface StreamViewData {
 }
 
 /**
- * All is every message; the Inbox is every unread one. A stream shows its own messages
+ * All is every message; the Inbox is every unread one with no stream. A stream shows its own messages
  * plus those of all streams nested under it. Only pins for `streamId` itself affect the order.
  */
 export async function loadStreamView(streamId: string, streams: Stream[]): Promise<StreamViewData> {
@@ -572,7 +579,7 @@ export async function loadStreamView(streamId: string, streams: Stream[]): Promi
     streamId === ALL_ID
       ? await db.messages.toArray()
       : streamId === INBOX_ID
-        ? await db.messages.where('unread').equals(1).toArray()
+        ? await inboxMessages().toArray()
         : await db.messages
             .where('streamId')
             .anyOf([streamId, ...descendantIds(streams, streamId)])
@@ -616,7 +623,7 @@ export function versionsOf(messageId: string): Promise<Version[]> {
   return db.versions.where('messageId').equals(messageId).reverse().sortBy('createdAt')
 }
 
-/** Message counts per stream including nested streams, the Inbox unread count, and the All total. */
+/** Message counts per stream including nested streams, the Inbox count, and the All total. */
 export async function countsByStream(streams: Stream[]): Promise<Record<string, number>> {
   const own = new Map<string, number>()
   await Promise.all(
@@ -625,8 +632,8 @@ export async function countsByStream(streams: Stream[]): Promise<Record<string, 
     }),
   )
   const counts: Record<string, number> = {
-    [INBOX_ID]: await unreadCount(),
     [ALL_ID]: await db.messages.count(),
+    [INBOX_ID]: await inboxMessages().count(),
   }
   for (const s of streams) {
     const nested = descendantIds(streams, s.id).reduce((n, id) => n + (own.get(id) ?? 0), 0)

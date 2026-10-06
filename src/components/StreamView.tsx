@@ -10,7 +10,7 @@ import {
   flattenTree,
   INBOX_ID,
   loadStreamView,
-  markAllRead,
+  markInboxRead,
   matchesQuery,
   moveStream,
   parseSearch,
@@ -125,7 +125,7 @@ export default function StreamView({
   const clearInbox = async () => {
     const n = view?.messages.length ?? 0
     if (n === 0) return
-    if (confirm(`Mark ${n} ${n === 1 ? 'message' : 'messages'} as read?`)) await markAllRead()
+    if (confirm(`Mark ${n} ${n === 1 ? 'message' : 'messages'} as read?`)) await markInboxRead()
   }
 
   // Header editing state is tied to a stream id, so switching streams implicitly cancels it.
@@ -373,7 +373,9 @@ export default function StreamView({
             {streamId === INBOX_ID ? (
               <>
                 <p>You're all caught up.</p>
-                <p className="muted">New messages from every stream land here until you mark them read.</p>
+                <p className="muted">
+                  New messages without a stream land here until you mark them read or move them into one.
+                </p>
               </>
             ) : (
               <>

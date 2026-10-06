@@ -16,7 +16,7 @@ check('manifest declares a share target', manifest.share_target?.action === '/sh
 
 // Install the service worker by loading the app once
 await page.goto(PROD_BASE + '/')
-await page.getByRole('heading', { name: 'Inbox', level: 2 }).waitFor()
+await page.getByRole('heading', { name: 'All', level: 2 }).waitFor()
 const swState = await page.evaluate(async () => {
   const reg = await navigator.serviceWorker.ready
   const sw = reg.active
@@ -45,7 +45,7 @@ await page.evaluate((b64) => {
   form.submit()
 }, png)
 await page.waitForURL((u) => !u.pathname.startsWith('/share'), { timeout: 15000 })
-const composer = page.getByLabel('Write to Inbox')
+const composer = page.getByLabel('Write to All')
 await page.waitForFunction(() => /Shared title/.test(document.querySelector('textarea')?.value ?? ''), null, { timeout: 15000 })
 check('share redirects into the app and prefills the composer', (await composer.inputValue()) === 'Shared title\nSome shared text\nhttps://example.com/article', JSON.stringify(await composer.inputValue()))
 check('share flag is stripped from the URL', !page.url().includes('share='))

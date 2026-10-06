@@ -6,7 +6,7 @@ const errors = []
 page.on('pageerror', (e) => errors.push(e.message)); page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()) })
 await page.goto(BASE)
 const src = 'Todo:\n- [ ] 1\n- [ ] 2\n    - [ ] 3\n      - [x] 4\n1. [ ] numbered\n\n```\n- [ ] not a task\n```'
-const c = page.getByLabel('Write to Inbox')
+const c = page.getByLabel('Write to All')
 await c.fill(src); await c.press('Enter')
 const card = page.locator('.msg').first()
 await card.locator('.md').waitFor()

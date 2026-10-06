@@ -5,7 +5,7 @@ const page = await (await browser.newContext({ viewport: { width: 1200, height: 
 const errors = []
 page.on('pageerror', (e) => errors.push(e.message)); page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()) })
 await page.goto(BASE)
-const c = page.getByLabel('Write to Inbox')
+const c = page.getByLabel('Write to All')
 const post = async (t) => { await c.fill(t); await c.press('Enter'); await page.waitForTimeout(25) }
 await post('Budget review #Work')
 await post('lunch notes #work #Food')
@@ -70,7 +70,7 @@ await page.locator('.stream-list').waitFor()
 
 // Suggestion menu in in-stream search, picked with the mouse
 await page.locator('header').getByRole('button', { name: 'Search' }).click()
-const inS = page.getByRole('searchbox', { name: 'Search in Inbox' })
+const inS = page.getByRole('searchbox', { name: 'Search in All' })
 await inS.type('notes #f')
 const menu2 = page.locator('#stream-tag-menu')
 await menu2.waitFor()

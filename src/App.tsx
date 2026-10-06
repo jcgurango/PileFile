@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, INBOX_ID, isVirtual } from './db'
+import { ALL_ID, db, isVirtual } from './db'
 import { SHARE_FLAG, shareText, takeShares, type SharePayload } from './share-store'
 import Sidebar from './components/Sidebar'
 import StreamView from './components/StreamView'
@@ -19,7 +19,7 @@ export interface Focus {
 }
 
 export default function App() {
-  const [streamId, setStreamId] = useState(INBOX_ID)
+  const [streamId, setStreamId] = useState(ALL_ID)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [focus, setFocus] = useState<Focus | null>(null)
   const [query, setQuery] = useState('')
@@ -82,9 +82,9 @@ export default function App() {
 
   if (!streams) return null
 
-  // If the selected stream disappears (deleted), show the Inbox instead.
+  // If the selected stream disappears (deleted), show All instead.
   const stream = streams.find((s) => s.id === streamId)
-  const effectiveId = stream || isVirtual(streamId) ? streamId : INBOX_ID
+  const effectiveId = stream || isVirtual(streamId) ? streamId : ALL_ID
 
   return (
     <div className="app">

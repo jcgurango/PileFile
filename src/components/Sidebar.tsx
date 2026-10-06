@@ -191,19 +191,19 @@ function StreamTree({ streams, selectedId, collapsed, onToggle, onSelect }: Tree
   return (
     <nav className="stream-list">
       <StreamRow
+        name="All"
+        kind="all"
+        count={counts[ALL_ID]}
+        selected={selectedId === ALL_ID}
+        onClick={() => onSelect(ALL_ID)}
+      />
+      <StreamRow
         name="Inbox"
         kind="inbox"
         count={counts[INBOX_ID]}
         emphasizeCount
         selected={selectedId === INBOX_ID}
         onClick={() => onSelect(INBOX_ID)}
-      />
-      <StreamRow
-        name="All"
-        kind="all"
-        count={counts[ALL_ID]}
-        selected={selectedId === ALL_ID}
-        onClick={() => onSelect(ALL_ID)}
       />
       {streams.length > 0 && <div className="list-label">Streams</div>}
       {visible.map(({ stream, depth, hasChildren }) => (
@@ -250,7 +250,7 @@ function StreamTree({ streams, selectedId, collapsed, onToggle, onSelect }: Tree
 interface StreamRowProps {
   name: string
   count?: number
-  /** Show the count as a badge (used for the Inbox unread count). */
+  /** Show the count as a badge (used for the Inbox count). */
   emphasizeCount?: boolean
   selected: boolean
   kind?: 'inbox' | 'all' | 'stream'
@@ -334,10 +334,10 @@ function SearchResultsList({ query, streams, onSelect }: SearchProps) {
       <section>
         <div className="list-label">Streams</div>
         {!anyStreams && <p className="muted small pad">No matching streams</p>}
+        {showAll && <StreamRow name="All" kind="all" selected={false} onClick={() => onSelect(ALL_ID)} />}
         {showInbox && (
           <StreamRow name="Inbox" kind="inbox" selected={false} onClick={() => onSelect(INBOX_ID)} />
         )}
-        {showAll && <StreamRow name="All" kind="all" selected={false} onClick={() => onSelect(ALL_ID)} />}
         {matchedStreams.map((s) => (
           <StreamRow
             key={s.id}

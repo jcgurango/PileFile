@@ -3,7 +3,7 @@ const { check, finish } = checker()
 const browser = await launch()
 const page = await (await browser.newContext({ viewport: { width: 900, height: 900 } })).newPage()
 await page.goto(BASE)
-const c = page.getByLabel('Write to Inbox')
+const c = page.getByLabel('Write to All')
 const cases = [
   ['tight mixed', '- [ ] Test\n- Work Backlog\n  - Pepsi'],
   ['tight two', '- [ ] Test\n- Work Backlog'],

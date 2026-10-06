@@ -9,7 +9,7 @@ page.on('pageerror', (e) => errors.push(e.message)); page.on('console', (m) => {
 await page.goto(BASE)
 const card = (t) => page.locator('.msg', { has: page.locator('.msg-text', { hasText: t }) })
 const composer = page.locator('.composer')
-const textarea = page.getByLabel('Write to Inbox')
+const textarea = page.getByLabel('Write to All')
 const save = () => composer.getByRole('button', { name: 'Save' })
 const b64 = (name) => readFileSync(F + name).toString('base64')
 /** Dispatch a drop or paste event carrying real File objects built in the page. */

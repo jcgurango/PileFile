@@ -10,7 +10,7 @@ const seedAndLoad = async (label, idbVersion, seed) => {
   await page.goto(`${BASE}/pilefile-icon.svg`)
   await page.evaluate(seed, idbVersion)
   await page.goto(BASE)
-  const ok = await page.getByRole('heading', { name: 'Inbox', level: 2 }).waitFor({ timeout: 8000 }).then(() => true, () => false)
+  const ok = await page.getByRole('heading', { name: 'All', level: 2 }).waitFor({ timeout: 8000 }).then(() => true, () => false)
   const info = ok ? await page.evaluate(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { const d = r.result; const out = { version: d.version, stores: [...d.objectStoreNames].sort() }; const tx = d.transaction(['streams', 'messages']); tx.objectStore('streams').getAll().onsuccess = (e) => { out.streams = e.target.result; tx.objectStore('messages').getAll().onsuccess = (e2) => { out.messages = e2.target.result.map((m) => ({ text: m.text, words: m.words })); res(out); d.close() } } } })) : null
   const relevant = errors.filter((e) => !/404/.test(e)) // the raw-SVG seeding page requests a favicon.ico
   const shown = ok ? { streams: await page.locator('.stream-list .stream-name').allInnerTexts(), messages: await page.locator('.msg').count() } : null

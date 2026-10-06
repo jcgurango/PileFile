@@ -6,7 +6,7 @@
 
 A local-first notes app that works like the "saved messages" chat you keep with yourself.
 
-- **Streams** organise messages and can be nested. A message lives in one stream (or none). Opening a stream shows its own messages plus those of every stream nested under it. **All** shows everything. The **Inbox** is a triage tray: every new message lands there, whatever its stream, until you mark it read (one at a time, or all at once). Editing does not mark a message unread again.
+- **Streams** organise messages and can be nested. A message lives in one stream (or none). Opening a stream shows its own messages plus those of every stream nested under it. **All** shows everything and is where the app opens. The **Inbox** is a triage tray: a new message that is not in any stream sits there until you mark it read (one at a time, or all at once) or move it into a stream. Editing does not mark a message unread again.
 - Messages are flush, full-width rows, newest first by creation time. On a keyboard, Enter saves and Shift+Enter adds a line; on touch devices Enter adds a line and the send button saves. On phones and narrow windows each message has a single "More" button that opens a sheet of actions; on desktop the actions appear as icons on hover.
 - Text renders as Markdown (GitHub flavoured: lists, task lists, tables, strikethrough, code, links). Single line breaks are kept, like a chat message. Clicking a task checkbox flips it in the source and records a new version. Raw HTML is shown as text.
 - Write `#Tag` anywhere to tag a message. Tags are clickable (they open the search panel with that tag), indexed, and matched exactly (`#MyTa` does not find `#MyTag`). Typing `#` in either search box lists matching tags to pick from.

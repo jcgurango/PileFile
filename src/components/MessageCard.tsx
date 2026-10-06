@@ -48,7 +48,7 @@ type Panel = 'none' | 'edit' | 'move' | 'history'
 interface Props {
   message: Message
   streams: Stream[]
-  /** The view this card is rendered in: a stream id or INBOX_ID. Pins are scoped to it. */
+  /** The view this card is rendered in: a stream id, INBOX_ID or ALL_ID. Pins are scoped to it. */
   currentStreamId: string
   /** Every pin of this message, in any context. */
   pins: Pin[]
@@ -180,7 +180,7 @@ export default function MessageCard({
           key: 'unread',
           icon: Mail,
           label: 'Mark unread',
-          hint: 'Mark unread: back to the Inbox',
+          hint: message.streamId === null ? 'Mark unread: back to the Inbox' : 'Mark unread',
           onSelect: () => void setRead(message.id, false),
         },
     { key: 'reply', icon: Reply, label: 'Reply', hint: 'Reply with a backlink', onSelect: () => onReply(message) },
