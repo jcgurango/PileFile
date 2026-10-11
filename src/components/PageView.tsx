@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { ChangeSet } from '@codemirror/state'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { History } from 'lucide-react'
-import { loadEmbedded, loadPage, savePage, type Message, type PageVersion, type Stream, type StreamViewData } from '../db'
+import { addMergeVersion, loadEmbedded, loadPage, savePage, type Message, type PageVersion, type Stream, type StreamViewData } from '../db'
+import { ancestry, changesBetween, merge, mergeId, onLine, spliceChange, tips } from '../pageMerge'
 import type { EmbedLine, EmbedSlot } from '../editor/embeds'
 import { dissolved } from '../page'
 import { buildThreads } from '../threads'
 import IconButton from './IconButton'
-import PageEditor, { type EmbedApi } from './PageEditor'
+import PageEditor, { type EmbedApi, type PageEditorHandle } from './PageEditor'
 import Quote from './Quote'
 import ThreadList from './ThreadList'
 import VersionCalendar from './VersionCalendar'
@@ -56,17 +57,89 @@ export default function PageView({ stream, renderCard, onJumpTo }: Props) {
   const [embeds, setEmbeds] = useState<EmbedLine[]>([])
 
   // What the editor shows, and the version it was built on: the parent of the next save.
+  const editor = useRef<PageEditorHandle>(null)
   const doc = useRef(currentText)
-  const base = useRef<{ id: string | null; text: string }>({ id: page?.current?.id ?? null, text: currentText })
+  const base = useRef<{ id: string | null; text: string }>({ id: null, text: '' })
   const pending = useRef<{ text: string; changes: ChangeSet; timer: number } | null>(null)
   // Saves go out one after another, each on top of the one before.
   const queue = useRef(Promise.resolve())
+  const flushRef = useRef<() => void>(() => {})
 
+  /**
+   * Moves the editor from its base to `to`, whose text is the base's text with `changes`
+   * applied. Unsaved edits are carried along: they get mapped over the incoming changes, and the
+   * incoming changes over them, so both survive.
+   */
+  const advance = useCallback((changes: ChangeSet, to: { id: string; text: string }) => {
+    const p = pending.current
+    base.current = to
+    if (p) {
+      const incoming = changes.map(p.changes, true)
+      p.changes = p.changes.map(changes)
+      editor.current?.apply(incoming)
+      p.text = doc.current
+    } else {
+      editor.current?.apply(changes)
+    }
+  }, [])
+
+  // Storage changed. Work out how the editor's base relates to each tip of the page and catch up:
+  // a tip built on the base is taken over; one built beside it (another device, meanwhile) is merged.
   useEffect(() => {
-    // Storage moved under an editor with nothing unsaved (its own save landed, or another device's):
-    // that version is the new base.
-    if (page && doc.current === currentText) base.current = { id: page.current?.id ?? null, text: currentText }
-  }, [page, currentText])
+    if (!page) return
+    const b = base.current
+    // A save of ours is still on its way to storage: wait for it, so the base is there to reason about.
+    if (b.id !== null && !page.byId.has(b.id)) return
+    /** Writes unsaved edits first, so that only saved text takes part in a merge. True when there is nothing to wait for. */
+    const settled = () => {
+      const p = pending.current
+      if (!p) return true
+      const noop = p.text === b.text
+      flushRef.current()
+      return noop
+    }
+    if (b.id === null) {
+      // Nothing was ever shown: take the page as it is (text typed meanwhile becomes a fork, merged on the next pass).
+      const first = page.current
+      if (!first || !settled()) return
+      advance(changesBetween(page, null, first.id), { id: first.id, text: page.textOf(first.id) ?? '' })
+      return
+    }
+    for (const tip of tips(page, page.versions)) {
+      if (tip.id === b.id) continue
+      const tipText = page.textOf(tip.id) ?? ''
+      if (!ancestry(page, tip.id).has(b.id)) {
+        if (ancestry(page, b.id).has(tip.id)) continue // older than the base: already part of it
+        // A fork: the same merge, with the same id, that the other device works out for this pair.
+        if (!settled()) return
+        const m = merge(page, b.id, tip.id)
+        const id = mergeId(b.id, tip.id)
+        if (!page.byId.has(id)) {
+          void addMergeVersion({
+            id,
+            streamId: stream.id,
+            createdAt: Date.now(),
+            parentId: tip.id,
+            mergeOf: b.id,
+            text: m.text,
+            patch: JSON.stringify(m.ontoTheirs.toJSON()),
+          })
+        }
+        advance(m.ontoMine, { id, text: m.text })
+        return
+      }
+      // The tip was built on the base. Straight down the line: replay its patches. A merge of the base made
+      // elsewhere: the other branch's side of that merge. Anything more tangled: the plain difference in text.
+      const changes =
+        tip.mergeOf === b.id && tip.parentId
+          ? merge(page, b.id, tip.parentId).ontoMine
+          : onLine(page, b.id, tip.id)
+            ? changesBetween(page, b.id, tip.id)
+            : spliceChange(b.text, tipText)
+      advance(changes, { id: tip.id, text: tipText })
+      return
+    }
+  }, [page, stream.id, advance])
 
   const flush = useCallback(() => {
     const p = pending.current
@@ -74,19 +147,32 @@ export default function PageView({ stream, renderCard, onJumpTo }: Props) {
     clearTimeout(p.timer)
     pending.current = null
     const { text, changes } = p
+    const parent = base.current
+    if (parent.text === text) {
+      setUnsaved(false)
+      return
+    }
+    // The base moves on at once, under the id the row will get, so storage updates meanwhile are read against it.
+    const id = crypto.randomUUID()
+    base.current = { id, text }
     queue.current = queue.current.then(async () => {
-      const parent = base.current
-      if (parent.text === text) return
-      const id = await savePage(stream.id, parent.id, text, changes)
-      base.current = { id, text }
+      await savePage(stream.id, parent.id, text, changes, id)
       setUnsaved(pending.current !== null)
     })
   }, [stream.id])
+  useEffect(() => {
+    flushRef.current = flush
+  }, [flush])
 
   const onDocChange = useCallback(
     (text: string, changes: ChangeSet | null) => {
       doc.current = text
-      if (!changes) return
+      if (!changes) {
+        // The editor reports a text it did not type: a load from storage, or a fresh editor instance (React
+        // remounts in development). If it disagrees with what should be shown, bring it into line.
+        if (!pending.current && text !== base.current.text) editor.current?.apply(spliceChange(text, base.current.text))
+        return
+      }
       if (pending.current) clearTimeout(pending.current.timer)
       pending.current = {
         text,
@@ -198,7 +284,14 @@ export default function PageView({ stream, renderCard, onJumpTo }: Props) {
       {old ? (
         <PageEditor key={old.id} text={old.text} readOnly onEmbeds={setEmbeds} renderEmbed={renderEmbed} />
       ) : (
-        <PageEditor key={stream.id} text={currentText} onDocChange={onDocChange} onEmbeds={setEmbeds} renderEmbed={renderEmbed} />
+        <PageEditor
+          ref={editor}
+          key={stream.id}
+          text={base.current.text}
+          onDocChange={onDocChange}
+          onEmbeds={setEmbeds}
+          renderEmbed={renderEmbed}
+        />
       )}
     </div>
   )

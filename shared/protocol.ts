@@ -71,8 +71,13 @@ export interface PageVersionRow {
   parentId: string | null
   /** The full text, for a snapshot. */
   text?: string
-  /** A CodeMirror ChangeSet as JSON, applied to the parent's text. */
+  /** A CodeMirror ChangeSet as JSON, applied to the parent's text. Snapshots carry one too when it is known. */
   patch?: string
+  /**
+   * For a merge: the other version it reconciles, the tip of the branch that `parentId` was not on.
+   * Both are its parents when asking what descends from what; `patch` is relative to `parentId`.
+   */
+  mergeOf?: string
 }
 
 export type StreamViewMode = 'page' | 'messages' | 'threaded'

@@ -2,6 +2,7 @@ import Dexie, { type EntityTable } from 'dexie'
 import { extractTags, parseQuery, type ParsedQuery } from './tags'
 import { kindOf, makeThumbnail } from './attachments'
 import { ChangeSet, Text } from '@codemirror/state'
+import { spliceChange, tips, type Graph } from './pageMerge'
 import type { Action, ActionBody, PageVersionRow, StreamViewMode } from '../shared/protocol'
 
 export type { StreamViewMode }
@@ -407,16 +408,15 @@ export const SNAPSHOT_EVERY = 20
 const toText = (s: string) => Text.of(s.split('\n'))
 
 /**
- * A stream's page versions with their texts worked out. `current` is the newest version whose
- * chain reaches a snapshot (a row whose parent has not arrived yet cannot be read, and waits).
- * `chain` is that version's ancestry, newest first: the page's history.
+ * A stream's page versions with their texts worked out. `current` is the newest tip: a version
+ * nothing was built on, whose chain reaches a snapshot (a row whose parent has not arrived yet
+ * cannot be read, and waits). `chain` is that version's line of descent, newest first: the
+ * page's history.
  */
-export interface Page {
+export interface Page extends Graph {
   versions: PageVersion[]
   current: PageVersion | null
   chain: PageVersion[]
-  /** Text of any readable version; null for an orphan. Memoised. */
-  textOf: (id: string) => string | null
   /** Patches between `id` and the snapshot behind it. */
   depthOf: (id: string) => number
 }
@@ -447,15 +447,15 @@ export function readPage(versions: PageVersion[]): Page {
     for (let v = byId.get(id); v && v.text === undefined && v.parentId; v = byId.get(v.parentId)) n++
     return n
   }
-  const sorted = [...versions].sort((a, b) => b.createdAt - a.createdAt)
-  const current = sorted.find((v) => textOf(v.id) !== null) ?? null
+  const graph: Graph = { byId, textOf }
+  const current = tips(graph, versions)[0] ?? null
   const chain: PageVersion[] = []
   const seen = new Set<string>()
-  for (let v = current; v && !seen.has(v.id); v = v.parentId ? (byId.get(v.parentId) ?? null) : null) {
+  for (let v: PageVersion | undefined = current ?? undefined; v && !seen.has(v.id); v = v.parentId ? byId.get(v.parentId) : undefined) {
     seen.add(v.id)
     chain.push(v)
   }
-  return { versions, current, chain, textOf, depthOf }
+  return { byId, textOf, versions, current, chain, depthOf }
 }
 
 export async function loadPage(streamId: string): Promise<Page> {
@@ -486,8 +486,13 @@ async function addPageVersion(version: PageVersion): Promise<void> {
  * The editor's autosave: a new version on top of `parentId`, the version the editor was showing.
  * `patch` is the ChangeSet from that text to `text`; it is stored unless a snapshot is due.
  */
-export async function savePage(streamId: string, parentId: string | null, text: string, patch: ChangeSet): Promise<string> {
-  const id = uid()
+export async function savePage(
+  streamId: string,
+  parentId: string | null,
+  text: string,
+  patch: ChangeSet,
+  id: string = uid(),
+): Promise<string> {
   await db.transaction('rw', db.pageVersions, db.outbox, async () => {
     const page = await loadPage(streamId)
     const serialized = JSON.stringify(patch.toJSON())
@@ -502,14 +507,29 @@ export async function savePage(streamId: string, parentId: string | null, text: 
   return id
 }
 
-/** Changes the page from outside the editor, as a snapshot on top of the current version. `change` gets the current text. */
+/**
+ * Changes the page from outside the editor, as a snapshot on top of the current version.
+ * `change` gets the current text. The patch is kept too, so the version can be merged over.
+ */
 export async function editPage(streamId: string, change: (current: string) => string): Promise<void> {
   await db.transaction('rw', db.pageVersions, db.outbox, async () => {
     const page = await loadPage(streamId)
     const current = page.current ? (page.textOf(page.current.id) ?? '') : ''
     const text = change(current)
     if (text === current) return
-    await addPageVersion({ id: uid(), streamId, createdAt: Date.now(), parentId: page.current?.id ?? null, text })
+    const patch = JSON.stringify(spliceChange(current, text).toJSON())
+    await addPageVersion({ id: uid(), streamId, createdAt: Date.now(), parentId: page.current?.id ?? null, text, patch })
+  })
+}
+
+/**
+ * Records a merge of two tips, unless the same merge has already arrived from the device that
+ * made it at the same time (same id, same text; its patch sits on the other parent).
+ */
+export async function addMergeVersion(version: PageVersion): Promise<void> {
+  await db.transaction('rw', db.pageVersions, db.outbox, async () => {
+    if (await db.pageVersions.get(version.id)) return
+    await addPageVersion(version)
   })
 }
 

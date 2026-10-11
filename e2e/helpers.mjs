@@ -44,3 +44,16 @@ export function shotPath(name) {
 }
 
 export const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname
+
+/**
+ * A stream's page as stored in the browser: the newest tip, read back through its chain of
+ * patches (a ChangeSet in JSON is a list of kept lengths and [deleted, ...insertedLines]).
+ * Also returns the raw rows, oldest first.
+ */
+export const storedPage = (page) => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('pageVersions').objectStore('pageVersions').getAll().onsuccess = (e) => {
+  const rows = e.target.result.sort((a, b) => a.createdAt - b.createdAt); const byId = new Map(rows.map((v) => [v.id, v]))
+  const textOf = (v) => { if (!v) return null; if (v.text !== undefined) return v.text; const base = textOf(byId.get(v.parentId)); if (base === null) return null; let out = ''; let pos = 0; for (const sec of JSON.parse(v.patch)) { if (typeof sec === 'number') { out += base.slice(pos, pos + sec); pos += sec } else { pos += sec[0]; out += sec.slice(1).join('\n') } } return out }
+  const used = new Set(rows.flatMap((v) => [v.parentId, v.mergeOf].filter(Boolean)))
+  const tip = rows.filter((v) => !used.has(v.id) && textOf(v) !== null).sort((a, b) => b.createdAt - a.createdAt)[0]
+  res({ text: tip ? textOf(tip) : '', rows: rows.map((v) => ({ id: v.id, parentId: v.parentId, mergeOf: v.mergeOf, kind: v.text !== undefined ? 'snapshot' : 'patch' })) })
+} } }))

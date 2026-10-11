@@ -1,4 +1,4 @@
-import { BASE, DATA_DIR, checker, fixture, launch } from './helpers.mjs'
+import { BASE, DATA_DIR, checker, fixture, launch, storedPage } from './helpers.mjs'
 import { readdirSync, existsSync } from 'node:fs'
 const DATA = DATA_DIR
 const F = fixture('')
@@ -169,6 +169,28 @@ await B.page.keyboard.press('End')
 await B.page.keyboard.insertText(', says B')
 await A.page.locator('.page-editor .cm-line', { hasText: 'First line and more, says B' }).waitFor({ timeout: 10000 })
 check('and what B types appears in A\'s', true)
+
+// Both devices edit the same page while offline: on reconnecting the edits are merged, the same way on both
+const lineOn = (page, text) => page.locator('.page-editor .cm-line', { hasText: text })
+await A.ctx.setOffline(true)
+await B.ctx.setOffline(true)
+await lineOn(A.page, 'First line').click(); await A.page.keyboard.press('End'); await A.page.keyboard.insertText(' + A offline')
+await lineOn(B.page, 'Shared page').click(); await B.page.keyboard.press('End'); await B.page.keyboard.insertText(' (B offline)')
+await A.page.locator('.page-bar .hint', { hasText: /^Saved$/ }).waitFor()
+await B.page.locator('.page-bar .hint', { hasText: /^Saved$/ }).waitFor()
+await A.ctx.setOffline(false)
+await B.ctx.setOffline(false)
+const merged = '# Shared page (B offline)\nFirst line and more, says B + A offline'
+await A.page.waitForFunction(() => [...document.querySelectorAll('.page-editor .cm-line')].some((l) => l.textContent.includes('(B offline)')), null, { timeout: 20000 })
+await B.page.waitForFunction(() => [...document.querySelectorAll('.page-editor .cm-line')].some((l) => l.textContent.includes('+ A offline')), null, { timeout: 20000 })
+await A.page.waitForFunction((want) => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('pageVersions').objectStore('pageVersions').getAll().onsuccess = (e) => res(e.target.result.filter((v) => v.id.startsWith('merge:')).length === 1 && e.target.result.some((v) => v.text === want)) } }), merged, { timeout: 20000 })
+await B.page.waitForFunction(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('pageVersions').objectStore('pageVersions').getAll().onsuccess = (e) => res(e.target.result.filter((v) => v.id.startsWith('merge:')).length === 1) } }), null, { timeout: 20000 })
+const [pa, pb] = [await storedPage(A.page), await storedPage(B.page)]
+check('offline edits on two devices merge into one page holding both', pa.text === merged && pb.text === merged, JSON.stringify([pa.text, pb.text]))
+check('both devices end on the same single merge version', pa.rows.length === pb.rows.length && pa.rows.filter((r) => r.id.startsWith('merge:')).length === 1 && pb.rows.filter((r) => r.id.startsWith('merge:')).length === 1, JSON.stringify([pa.rows.length, pb.rows.length]))
+const mergeRow = pa.rows.find((r) => r.id.startsWith('merge:'))
+check('the merge names both branches it reconciles', Boolean(mergeRow.parentId && mergeRow.mergeOf) && mergeRow.kind === 'snapshot')
+check('the editors show the merged text', (await A.page.locator('.page-editor .cm-content').innerText()).includes('says B + A offline') && (await B.page.locator('.page-editor .cm-content').innerText()).includes('(B offline)'))
 await B.page.getByRole('tab', { name: 'Threaded' }).click()
 await stored(A.page, 'threaded')
 await A.page.waitForTimeout(300)
@@ -183,7 +205,7 @@ await open(D.page, 'Work')
 check('a fresh device gets the view choice from the snapshot', (await selectedTab(D.page)) === 'Threaded')
 await D.page.getByRole('tab', { name: 'Page' }).click()
 await heading(D.page).waitFor()
-check('a fresh device gets the page from the snapshot', (await heading(D.page).innerText()) === 'Shared page' && (await D.page.locator('.page-editor .cm-line', { hasText: 'First line and more, says B' }).count()) === 1)
+check('a fresh device gets the merged page from the snapshot', (await heading(D.page).innerText()) === 'Shared page (B offline)' && (await storedPage(D.page)).text === merged, (await storedPage(D.page)).text)
 
 // Logout keeps local data
 await open(A.page, 'All')

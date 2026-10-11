@@ -133,6 +133,10 @@ const MIGRATIONS: string[] = [
   CREATE INDEX page_versions_user ON page_versions(user_id);
   CREATE INDEX page_versions_stream ON page_versions(stream_id);
   `,
+  // v4: a merge version names the second branch it reconciles.
+  `
+  ALTER TABLE page_versions ADD COLUMN merge_of TEXT;
+  `,
 ]
 
 export function openDb(path: string): Db {

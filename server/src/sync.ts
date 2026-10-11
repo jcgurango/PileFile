@@ -78,6 +78,7 @@ const toPageVersion = (r: Row): PageVersionRow => ({
   parentId: (r.parent_id as string | null) ?? null,
   ...(r.text === null ? {} : { text: r.text as string }),
   ...(r.patch === null ? {} : { patch: r.patch as string }),
+  ...(r.merge_of === null ? {} : { mergeOf: r.merge_of as string }),
 })
 
 const toPin = (r: Row): PinRow => ({
@@ -273,8 +274,8 @@ function applyOne(db: Db, userId: string, a: Action, removed: string[]): ChangeB
       const v = a.version
       if (!liveStream(db, userId, v.streamId) || db.prepare('SELECT 1 FROM page_versions WHERE id = ?').get(v.id)) return []
       db.prepare(
-        'INSERT INTO page_versions (id, user_id, stream_id, created_at, parent_id, text, patch) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      ).run(v.id, userId, v.streamId, v.createdAt, v.parentId, v.text ?? null, v.patch ?? null)
+        'INSERT INTO page_versions (id, user_id, stream_id, created_at, parent_id, text, patch, merge_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(v.id, userId, v.streamId, v.createdAt, v.parentId, v.text ?? null, v.patch ?? null, v.mergeOf ?? null)
       return [{ op: 'page.put', data: v }]
     }
 

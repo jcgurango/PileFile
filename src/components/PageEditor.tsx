@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type ReactNode, type Ref } from 'react'
 import { createPortal } from 'react-dom'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown, markdownKeymap, markdownLanguage } from '@codemirror/lang-markdown'
@@ -12,8 +12,14 @@ export interface EmbedApi {
   replaceWith: (text: string) => void
 }
 
+export interface PageEditorHandle {
+  /** Applies changes that came from storage (another device's edits, a merge). Not reported as an edit. */
+  apply: (changes: ChangeSet) => void
+}
+
 interface Props {
-  /** The page as stored. A change from outside is taken over only while there are no unsaved edits here. */
+  ref?: Ref<PageEditorHandle>
+  /** The text to start from. Later changes from storage come in through `apply`. */
   text: string
   readOnly?: boolean
   /**
@@ -33,12 +39,11 @@ const external = Annotation.define<boolean>()
  * The page editor: raw Markdown underneath, shown as live preview (see editor/livePreview.ts),
  * with message embeds drawn as cards. Enter is a plain newline, as everywhere else in the app.
  */
-export default function PageEditor({ text, readOnly = false, onDocChange, onEmbeds, renderEmbed }: Props) {
+export default function PageEditor({ ref, text, readOnly = false, onDocChange, onEmbeds, renderEmbed }: Props) {
   const parent = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const [host] = useState(() => new EmbedHost())
-  // What storage last said. While the document still equals it, nothing here is unsaved.
-  const stored = useRef(text)
+  const initial = useRef(text)
   const callbacks = useRef({ onDocChange, onEmbeds })
   useEffect(() => {
     callbacks.current = { onDocChange, onEmbeds }
@@ -50,7 +55,7 @@ export default function PageEditor({ text, readOnly = false, onDocChange, onEmbe
     const view = new EditorView({
       parent: parent.current!,
       state: EditorState.create({
-        doc: stored.current,
+        doc: initial.current,
         extensions: [
           history(),
           // markdownKeymap first: Enter continues lists and quotes, Backspace removes their markup.
@@ -88,15 +93,12 @@ export default function PageEditor({ text, readOnly = false, onDocChange, onEmbe
     }
   }, [host, readOnly])
 
-  useEffect(() => {
-    const view = viewRef.current
-    const was = stored.current
-    stored.current = text
-    if (!view) return
-    const doc = view.state.doc.toString()
-    if (doc === text || doc !== was) return
-    view.dispatch({ changes: { from: 0, to: doc.length, insert: text }, annotations: external.of(true) })
-  }, [text])
+  useImperativeHandle(ref, () => ({
+    apply: (changes) => {
+      const view = viewRef.current
+      if (view && changes.length === view.state.doc.length) view.dispatch({ changes, annotations: external.of(true) })
+    },
+  }))
 
   const slots = useSyncExternalStore(host.subscribe, host.getSlots)
   return (

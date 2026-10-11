@@ -1,4 +1,4 @@
-import { BASE, checker, launch, shotPath } from './helpers.mjs'
+import { BASE, checker, launch, shotPath, storedPage } from './helpers.mjs'
 const { check, finish } = checker()
 const browser = await launch()
 const ctx = await browser.newContext({ viewport: { width: 1200, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] })
@@ -19,14 +19,8 @@ const reply = async (to, text) => { await act(to, 'Reply'); await page.locator('
 const idOf = (t) => card(t).first().getAttribute('data-id')
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
 const editor = page.locator('.page-editor .cm-content')
-/** The page as stored: the newest version, read back through its chain of patches (a ChangeSet in JSON is a list of kept lengths and [deleted, ...insertedLines]). */
-const pageText = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('pageVersions').objectStore('pageVersions').getAll().onsuccess = (e) => {
-  const rows = e.target.result; const byId = new Map(rows.map((v) => [v.id, v]))
-  const textOf = (v) => { if (v.text !== undefined) return v.text; const base = textOf(byId.get(v.parentId)); let out = ''; let pos = 0; for (const sec of JSON.parse(v.patch)) { if (typeof sec === 'number') { out += base.slice(pos, pos + sec); pos += sec } else { pos += sec[0]; out += sec.slice(1).join('\n') } } return out }
-  const newest = rows.sort((a, b) => b.createdAt - a.createdAt)[0]
-  res(newest ? textOf(newest) : '')
-} } }))
-const versionRows = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('pageVersions').objectStore('pageVersions').getAll().onsuccess = (e) => res(e.target.result.sort((a, b) => a.createdAt - b.createdAt).map((v) => ({ id: v.id, parentId: v.parentId, kind: v.text !== undefined ? 'snapshot' : 'patch' }))) } }))
+const pageText = async () => (await storedPage(page)).text
+const versionRows = async () => (await storedPage(page)).rows
 /** Moves every stored version back in time, oldest furthest, so later saves count as a new stretch of editing. */
 const ageVersions = (minutesApart) => page.evaluate((gap) => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { const store = r.result.transaction('pageVersions', 'readwrite').objectStore('pageVersions'); store.getAll().onsuccess = (e) => { const rows = e.target.result.sort((a, b) => a.createdAt - b.createdAt); rows.forEach((v, i) => { v.createdAt -= (rows.length - i) * gap * 60000; store.put(v) }); res() } } }), minutesApart)
 const saved = () => page.locator('.page-bar .hint', { hasText: /^Saved$/ }).waitFor()
