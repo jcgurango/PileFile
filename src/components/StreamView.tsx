@@ -94,8 +94,19 @@ export default function StreamView({
   // a change made elsewhere while this stream is open must not switch the view under the reader.
   const choices = useLiveQuery(() => db.streamViews.toArray().then((rows) => new Map(rows.map((r) => [r.streamId, r.view]))), [])
   const [latched, setLatched] = useState<{ streamId: string; mode: StreamViewMode } | null>(null)
-  if (choices && latched?.streamId !== streamId) {
-    setLatched({ streamId, mode: (stream && choices.get(streamId)) || 'messages' })
+  // In-stream search is tied to a stream id, so switching streams closes it.
+  const [searchFor, setSearchFor] = useState<{ streamId: string; query: string } | null>(null)
+  // A request made on the way here is honoured once, without being saved as the stream's view: a
+  // message opened from search or a quote has to be on screen, which the page cannot promise, and
+  // a page found by search opens as the page.
+  const [seenFocus, setSeenFocus] = useState(focus?.nonce)
+  const freshFocus = choices && focus && focus.nonce !== seenFocus ? focus : null
+  if (freshFocus) setSeenFocus(freshFocus.nonce)
+  if (choices && (latched?.streamId !== streamId || freshFocus)) {
+    const remembered = (stream && choices.get(streamId)) || 'messages'
+    const asked = freshFocus?.view ?? (freshFocus && remembered === 'page' ? 'messages' : remembered)
+    setLatched({ streamId, mode: asked })
+    if (freshFocus?.view) setSearchFor(null)
   }
   const ready = latched?.streamId === streamId
   const mode: StreamViewMode = ready && stream ? latched.mode : 'messages'
@@ -105,15 +116,7 @@ export default function StreamView({
     setSearchFor(null)
     void setStreamView(stream.id, next)
   }
-  // A message opened from search or a quote has to be on screen, which the page cannot promise.
-  const [seenFocus, setSeenFocus] = useState(focus?.nonce)
-  if (focus?.nonce !== seenFocus) {
-    setSeenFocus(focus?.nonce)
-    if (focus && ready && mode === 'page') setLatched({ streamId, mode: 'messages' })
-  }
 
-  // In-stream search is tied to a stream id, so switching streams closes it.
-  const [searchFor, setSearchFor] = useState<{ streamId: string; query: string } | null>(null)
   const searching = searchFor?.streamId === streamId
   const query = searching ? searchFor.query : ''
   const parsed = useMemo(() => parseSearch(query), [query])

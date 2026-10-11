@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from './db'
+import type { StreamViewMode } from '../shared/protocol'
 import { openView, useAddressSync, useCurrentView } from './route'
 import { SHARE_FLAG, shareText, takeShares, type SharePayload } from './share-store'
 import Sidebar from './components/Sidebar'
@@ -13,9 +14,13 @@ export interface IncomingShare {
   nonce: number
 }
 
-/** A request to scroll to and briefly highlight one message. `nonce` lets the same message be re-focused. */
+/**
+ * What to show on arriving in a view: a message to scroll to and briefly highlight, or the stream's
+ * view to open (a page found by search). `nonce` lets the same request be made again.
+ */
 export interface Focus {
-  messageId: string
+  messageId?: string
+  view?: StreamViewMode
   nonce: number
 }
 
@@ -69,9 +74,9 @@ export default function App() {
   useAddressSync(streams)
 
   const openStream = useCallback(
-    (id: string, messageId?: string) => {
+    (id: string, messageId?: string, view?: StreamViewMode) => {
       void openView(id, streams ?? [])
-      setFocus(messageId ? { messageId, nonce: Date.now() } : null)
+      setFocus(messageId || view ? { messageId, view, nonce: Date.now() } : null)
       setDrawerOpen(false)
     },
     [streams],

@@ -308,6 +308,26 @@ button {
   color: var(--muted);
 }
 
+.result-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.result-title svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.result-page .result-text {
+  -webkit-line-clamp: 2;
+  font-size: 13px;
+  color: var(--muted);
+}
+
 mark {
   background: var(--mark);
   color: inherit;

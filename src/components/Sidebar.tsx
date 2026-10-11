@@ -15,8 +15,9 @@ import {
   unreadCounts,
   type Stream,
 } from '../db'
-import { ChevronDown, ChevronRight, Hash, Inbox, Layers, Plus, Search as SearchIcon, X } from 'lucide-react'
-import { formatFull, formatTimestamp, messagePreview, snippet } from '../format'
+import { ChevronDown, ChevronRight, FileText, Hash, Inbox, Layers, Plus, Search as SearchIcon, X } from 'lucide-react'
+import type { StreamViewMode } from '../../shared/protocol'
+import { formatFull, formatTimestamp, messagePreview, plainText, snippet } from '../format'
 import AccountPanel from './AccountPanel'
 import Highlighted from './Highlighted'
 import IconButton from './IconButton'
@@ -25,7 +26,7 @@ import TagMenu from './TagMenu'
 interface Props {
   streams: Stream[]
   selectedId: string
-  onSelect: (streamId: string, messageId?: string) => void
+  onSelect: (streamId: string, messageId?: string, view?: StreamViewMode) => void
   open: boolean
   onClose: () => void
   /** The search query lives in App so a tag click anywhere can open the search panel with it. */
@@ -65,7 +66,7 @@ export default function Sidebar({
 
   // Selecting a nested stream (e.g. from search) expands the branches above it.
   const select = useCallback(
-    (streamId: string, messageId?: string) => {
+    (streamId: string, messageId?: string, view?: StreamViewMode) => {
       if (!isVirtual(streamId)) {
         const above = ancestorsOf(streams, streamId).map((s) => s.id)
         if (above.length) {
@@ -76,7 +77,7 @@ export default function Sidebar({
           })
         }
       }
-      onSelect(streamId, messageId)
+      onSelect(streamId, messageId, view)
     },
     [streams, onSelect],
   )
@@ -316,7 +317,7 @@ function StreamRow({
 interface SearchProps {
   query: string
   streams: Stream[]
-  onSelect: (streamId: string, messageId?: string) => void
+  onSelect: (streamId: string, messageId?: string, view?: StreamViewMode) => void
 }
 
 function SearchResultsList({ query, streams, onSelect }: SearchProps) {
@@ -328,7 +329,7 @@ function SearchResultsList({ query, streams, onSelect }: SearchProps) {
 
   if (!results) return <div className="results" />
 
-  const { highlights, streams: matchedStreams, messages } = results
+  const { highlights, streams: matchedStreams, pages, messages } = results
   const anyStreams = showInbox || showAll || matchedStreams.length > 0
 
   return (
@@ -347,6 +348,27 @@ function SearchResultsList({ query, streams, onSelect }: SearchProps) {
             selected={false}
             onClick={() => onSelect(s.id)}
           />
+        ))}
+      </section>
+      <section>
+        <div className="list-label">Pages{pages.length ? ` · ${pages.length}` : ''}</div>
+        {pages.length === 0 && <p className="muted small pad">No matching pages</p>}
+        {pages.map(({ stream, text }) => (
+          <button
+            key={stream.id}
+            className="result-row result-page"
+            onClick={() => onSelect(stream.id, undefined, 'page')}
+          >
+            <span className="result-title">
+              <FileText size={14} strokeWidth={1.75} aria-hidden="true" />
+              <span>
+                <Highlighted text={streamPath(streams, stream.id)} terms={highlights} />
+              </span>
+            </span>
+            <span className="result-text">
+              <Highlighted text={snippet(plainText(text), highlights)} terms={highlights} />
+            </span>
+          </button>
         ))}
       </section>
       <section>

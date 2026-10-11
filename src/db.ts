@@ -3,6 +3,7 @@ import { extractTags, parseQuery, type ParsedQuery } from './tags'
 import { kindOf, makeThumbnail } from './attachments'
 import { ChangeSet, Text } from '@codemirror/state'
 import { spliceChange, tips, type Graph } from './pageMerge'
+import { parsePage } from './page'
 import type { Action, ActionBody, PageVersionRow, StreamViewMode } from '../shared/protocol'
 
 export type { StreamViewMode }
@@ -932,33 +933,72 @@ export async function listTags(): Promise<TagSummary[]> {
     .sort((a, b) => b.count - a.count || a.display.localeCompare(b.display))
 }
 
+/** A stream's page found by search, with its own Markdown (embed lines left out) for the snippet. */
+export interface PageHit {
+  stream: Stream
+  text: string
+}
+
 export interface SearchResults {
   /** Strings to highlight in result snippets. */
   highlights: string[]
   streams: Stream[]
+  pages: PageHit[]
   messages: Message[]
 }
 
-const EMPTY: SearchResults = { highlights: [], streams: [], messages: [] }
+const EMPTY: SearchResults = { highlights: [], streams: [], pages: [], messages: [] }
 const MAX_RESULTS = 200
 
 /**
+ * Pages are matched like messages, over the stream's name (the page's title) together with the
+ * page's own Markdown (embedded messages are found as messages). Pages are not indexed: every
+ * stream's current page is read, which is fine for the number of streams a person keeps. Empty
+ * pages are skipped; the stream row already covers them.
+ */
+async function searchPages(streams: Stream[], q: ParsedQuery): Promise<PageHit[]> {
+  const byStream = new Map<string, PageVersion[]>()
+  for (const v of await db.pageVersions.toArray()) {
+    const list = byStream.get(v.streamId)
+    if (list) list.push(v)
+    else byStream.set(v.streamId, [v])
+  }
+  const hits: PageHit[] = []
+  for (const stream of streams) {
+    const versions = byStream.get(stream.id)
+    if (!versions) continue
+    const page = readPage(versions)
+    const full = page.current ? (page.textOf(page.current.id) ?? '') : ''
+    const text = parsePage(full)
+      .flatMap((b) => (b.type === 'markdown' ? [b.text] : []))
+      .join('\n')
+    if (!text.trim()) continue
+    const words = tokenize(`${stream.name} ${text}`)
+    const tags = extractTags(text).map((t) => t.name)
+    if (q.tags.every((t) => tags.includes(t)) && q.terms.every((t) => words.some((w) => w.startsWith(t)))) {
+      hits.push({ stream, text })
+    }
+  }
+  return hits.sort((a, b) => byName(a.stream, b.stream))
+}
+
+/**
  * Streams match on a case-insensitive substring of their name.
- * Messages must carry every #tag exactly and every other term as a word prefix.
+ * Messages and pages must carry every #tag exactly and every other term as a word prefix.
  */
 export async function search(query: string): Promise<SearchResults> {
   const q = query.trim()
   if (!q) return EMPTY
 
   const lower = q.toLowerCase()
-  const streams = (await db.streams.toArray())
-    .filter((s) => s.name.toLowerCase().includes(lower))
-    .sort(byName)
+  const allStreams = await db.streams.toArray()
+  const streams = allStreams.filter((s) => s.name.toLowerCase().includes(lower)).sort(byName)
 
   const parsed = parseSearch(q)
   if (parsed.terms.length === 0 && parsed.tags.length === 0) {
-    return { highlights: [], streams, messages: [] }
+    return { highlights: [], streams, pages: [], messages: [] }
   }
+  const pages = await searchPages(allStreams, parsed)
 
   const keySets = await Promise.all([
     ...parsed.tags.map((t) => db.messages.where('tags').equals(t).primaryKeys()),
@@ -975,5 +1015,5 @@ export async function search(query: string): Promise<SearchResults> {
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, MAX_RESULTS)
 
-  return { highlights: parsed.highlights, streams, messages }
+  return { highlights: parsed.highlights, streams, pages, messages }
 }
