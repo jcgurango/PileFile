@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { ChangeSet } from '@codemirror/state'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { History } from 'lucide-react'
-import { loadEmbedded, pageVersionsOf, savePage, type Message, type Stream, type StreamViewData } from '../db'
+import { loadEmbedded, loadPage, savePage, type Message, type PageVersion, type Stream, type StreamViewData } from '../db'
 import type { EmbedLine, EmbedSlot } from '../editor/embeds'
 import { dissolved } from '../page'
 import { buildThreads } from '../threads'
@@ -30,47 +31,68 @@ interface Props {
 
 /** Quiet time after the last keystroke before the page is written. */
 const SAVE_MS = 800
-/** Typing keeps rewriting one version for this long, then starts the next: history gets a step every few minutes, not every pause. */
-const BURST_MS = 5 * 60_000
+/** Versions closer together than this are one step of history: a stretch of typing, not every pause in it. */
+const GROUP_MS = 5 * 60_000
+
+/** The newest version of each stretch of editing, newest first. */
+function historySteps(chain: PageVersion[]): PageVersion[] {
+  const steps: PageVersion[] = []
+  let last: PageVersion | undefined
+  for (const v of chain) {
+    if (!last || last.createdAt - v.createdAt > GROUP_MS) steps.push(v)
+    last = v
+  }
+  return steps
+}
 
 /** A stream's page: a live Markdown editor with messages set into it, saved as you type and kept as versions. */
 export default function PageView({ stream, renderCard, onJumpTo }: Props) {
-  const versions = useLiveQuery(() => pageVersionsOf(stream.id), [stream.id])
-  // Version browsing, as on a message: index into the newest-first list; null is closed.
+  const page = useLiveQuery(() => loadPage(stream.id), [stream.id])
+  const currentText = page?.current ? (page.textOf(page.current.id) ?? '') : ''
+  // Version browsing, as on a message: index into the newest-first steps; null is closed.
   const [viewIdx, setViewIdx] = useState<number | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [unsaved, setUnsaved] = useState(false)
   const [embeds, setEmbeds] = useState<EmbedLine[]>([])
 
-  const pending = useRef<{ text: string; timer: number } | null>(null)
-  const burst = useRef<{ id: string; startedAt: number; saved: boolean } | null>(null)
-  const latestId = useRef<string | undefined>(undefined)
+  // What the editor shows, and the version it was built on: the parent of the next save.
+  const doc = useRef(currentText)
+  const base = useRef<{ id: string | null; text: string }>({ id: page?.current?.id ?? null, text: currentText })
+  const pending = useRef<{ text: string; changes: ChangeSet; timer: number } | null>(null)
+  // Saves go out one after another, each on top of the one before.
+  const queue = useRef(Promise.resolve())
+
   useEffect(() => {
-    latestId.current = versions?.[0]?.id
-  }, [versions])
+    // Storage moved under an editor with nothing unsaved (its own save landed, or another device's):
+    // that version is the new base.
+    if (page && doc.current === currentText) base.current = { id: page.current?.id ?? null, text: currentText }
+  }, [page, currentText])
 
   const flush = useCallback(() => {
     const p = pending.current
     if (!p) return
     clearTimeout(p.timer)
     pending.current = null
-    // Keep writing the same version while this burst of typing lasts and nothing newer has landed on top of it.
-    let b = burst.current
-    const overtaken = b?.saved && latestId.current !== undefined && latestId.current !== b.id
-    if (!b || overtaken || Date.now() - b.startedAt > BURST_MS) {
-      b = burst.current = { id: crypto.randomUUID(), startedAt: Date.now(), saved: false }
-    }
-    const { id } = b
-    void savePage(stream.id, p.text, id).then(() => {
-      if (burst.current?.id === id) burst.current.saved = true
+    const { text, changes } = p
+    queue.current = queue.current.then(async () => {
+      const parent = base.current
+      if (parent.text === text) return
+      const id = await savePage(stream.id, parent.id, text, changes)
+      base.current = { id, text }
       setUnsaved(pending.current !== null)
     })
   }, [stream.id])
 
-  const onChange = useCallback(
-    (text: string) => {
+  const onDocChange = useCallback(
+    (text: string, changes: ChangeSet | null) => {
+      doc.current = text
+      if (!changes) return
       if (pending.current) clearTimeout(pending.current.timer)
-      pending.current = { text, timer: window.setTimeout(flush, SAVE_MS) }
+      pending.current = {
+        text,
+        changes: pending.current ? pending.current.changes.compose(changes) : changes,
+        timer: window.setTimeout(flush, SAVE_MS),
+      }
       setUnsaved(true)
     },
     [flush],
@@ -97,11 +119,12 @@ export default function PageView({ stream, renderCard, onJumpTo }: Props) {
   const data = useLiveQuery(() => loadEmbedded(ids, roots, stream.id), [key, stream.id])
   const byId = useMemo(() => new Map(data?.messages.map((m) => [m.id, m])), [data])
 
-  if (!versions) return <div className="page" />
+  if (!page) return <div className="page" />
 
-  const earlier = versions.length - 1
-  const asVersions = versions.map((v) => ({ id: v.id, messageId: v.streamId, text: v.text, createdAt: v.createdAt }))
-  const old = viewIdx !== null && viewIdx > 0 ? versions[Math.min(viewIdx, versions.length - 1)] : undefined
+  const steps = historySteps(page.chain)
+  const earlier = Math.max(0, steps.length - 1)
+  const asVersions = steps.map((v) => ({ id: v.id, messageId: v.streamId, text: page.textOf(v.id) ?? '', createdAt: v.createdAt }))
+  const old = viewIdx !== null && viewIdx > 0 ? asVersions[Math.min(viewIdx, asVersions.length - 1)] : undefined
 
   const renderEmbed = (slot: EmbedSlot, api: EmbedApi) => {
     if (!data) return null
@@ -126,7 +149,7 @@ export default function PageView({ stream, renderCard, onJumpTo }: Props) {
     <div className="page">
       <div className="page-bar">
         <span className="hint" role="status">
-          {old ? 'Viewing an earlier version' : unsaved ? 'Saving…' : versions.length === 0 ? 'Page' : 'Saved'}
+          {old ? 'Viewing an earlier version' : unsaved ? 'Saving…' : page.current ? 'Saved' : 'Page'}
         </span>
         {earlier > 0 && (
           <IconButton
@@ -175,13 +198,7 @@ export default function PageView({ stream, renderCard, onJumpTo }: Props) {
       {old ? (
         <PageEditor key={old.id} text={old.text} readOnly onEmbeds={setEmbeds} renderEmbed={renderEmbed} />
       ) : (
-        <PageEditor
-          key={stream.id}
-          text={versions[0]?.text ?? ''}
-          onChange={onChange}
-          onEmbeds={setEmbeds}
-          renderEmbed={renderEmbed}
-        />
+        <PageEditor key={stream.id} text={currentText} onDocChange={onDocChange} onEmbeds={setEmbeds} renderEmbed={renderEmbed} />
       )}
     </div>
   )

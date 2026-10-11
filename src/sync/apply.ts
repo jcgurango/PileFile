@@ -32,12 +32,9 @@ export async function applyChanges(changes: Change[]): Promise<void> {
             await dropStreamExtras(c.id)
             await db.streams.delete(c.id)
             break
-          case 'page.put': {
-            // The same version can arrive more than once while it is being typed into; keep the newest.
-            const local = await db.pageVersions.get(c.data.id)
-            if (!local || c.data.createdAt >= local.createdAt) await db.pageVersions.put(c.data)
+          case 'page.put':
+            await db.pageVersions.put(c.data)
             break
-          }
           case 'view.put': {
             // An older choice arriving late (this device's own echo, say) must not undo a newer one.
             const local = await db.streamViews.get(c.data.streamId)

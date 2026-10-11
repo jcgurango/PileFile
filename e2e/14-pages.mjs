@@ -19,9 +19,16 @@ const reply = async (to, text) => { await act(to, 'Reply'); await page.locator('
 const idOf = (t) => card(t).first().getAttribute('data-id')
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
 const editor = page.locator('.page-editor .cm-content')
-/** The page as stored: what the editor has written back. */
-const pageText = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('pageVersions').objectStore('pageVersions').getAll().onsuccess = (e) => res(e.target.result.sort((a, b) => b.createdAt - a.createdAt)[0]?.text ?? '') } }))
-const versionCount = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('pageVersions').objectStore('pageVersions').count().onsuccess = (e) => res(e.target.result) } }))
+/** The page as stored: the newest version, read back through its chain of patches (a ChangeSet in JSON is a list of kept lengths and [deleted, ...insertedLines]). */
+const pageText = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('pageVersions').objectStore('pageVersions').getAll().onsuccess = (e) => {
+  const rows = e.target.result; const byId = new Map(rows.map((v) => [v.id, v]))
+  const textOf = (v) => { if (v.text !== undefined) return v.text; const base = textOf(byId.get(v.parentId)); let out = ''; let pos = 0; for (const sec of JSON.parse(v.patch)) { if (typeof sec === 'number') { out += base.slice(pos, pos + sec); pos += sec } else { pos += sec[0]; out += sec.slice(1).join('\n') } } return out }
+  const newest = rows.sort((a, b) => b.createdAt - a.createdAt)[0]
+  res(newest ? textOf(newest) : '')
+} } }))
+const versionRows = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { r.result.transaction('pageVersions').objectStore('pageVersions').getAll().onsuccess = (e) => res(e.target.result.sort((a, b) => a.createdAt - b.createdAt).map((v) => ({ id: v.id, parentId: v.parentId, kind: v.text !== undefined ? 'snapshot' : 'patch' }))) } }))
+/** Moves every stored version back in time, oldest furthest, so later saves count as a new stretch of editing. */
+const ageVersions = (minutesApart) => page.evaluate((gap) => new Promise((res) => { const r = indexedDB.open('pilefile'); r.onsuccess = () => { const store = r.result.transaction('pageVersions', 'readwrite').objectStore('pageVersions'); store.getAll().onsuccess = (e) => { const rows = e.target.result.sort((a, b) => a.createdAt - b.createdAt); rows.forEach((v, i) => { v.createdAt -= (rows.length - i) * gap * 60000; store.put(v) }); res() } } }), minutesApart)
 const saved = () => page.locator('.page-bar .hint', { hasText: /^Saved$/ }).waitFor()
 /** Types at the very end of the page. insertText goes in as one paste-like input, so list continuation does not interfere. */
 const appendToPage = async (text) => { await editor.click(); await page.keyboard.press(`${MOD}+End`); await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End'); await page.keyboard.insertText(text); await saved() }
@@ -87,7 +94,10 @@ await page.waitForFunction(() => document.querySelector('.page-editor input.lp-c
 await saved()
 check('ticking it rewrites the marker in the page text', (await pageText()).includes('- [x] task one'))
 check('a done task is struck through', (await page.locator('.page-editor .lp-done').innerText()) === 'task one')
-check('one burst of typing is one version, not one per pause', (await versionCount()) === 1, String(await versionCount()))
+const rows = await versionRows()
+check('the first save is a snapshot, the next a patch on top of it', rows.length === 2 && rows[0].kind === 'snapshot' && rows[0].parentId === null && rows[1].kind === 'patch' && rows[1].parentId === rows[0].id, JSON.stringify(rows))
+check('saves within five minutes are one step of history', (await page.getByRole('button', { name: /History/ }).count()) === 0)
+await ageVersions(10)
 await page.reload()
 await page.getByRole('heading', { name: 'Work', level: 2 }).waitFor()
 await editor.waitFor()
@@ -95,9 +105,13 @@ check('the page and the Page view survive a reload', (await selectedTab()) === '
 check('an untouched page reads as rendered: no marks shown before the editor is focused', (await lineOf('Plan').first().innerText()) === 'Plan')
 await appendToPage('\nAfter reload')
 await page.getByRole('button', { name: /History/ }).waitFor()
-check('a later editing session starts a new version', (await versionCount()) === 2)
+const rows2 = await versionRows()
+check('a save after a long gap is a new step, patched onto the version before it', rows2.length === 3 && rows2[2].kind === 'patch' && rows2[2].parentId === rows2[1].id && (await page.getByRole('button', { name: /History/ }).innerText()).trim() === '2', JSON.stringify(rows2))
 await page.getByRole('button', { name: /History/ }).click()
 await page.locator('.page .vnav').waitFor()
+await page.locator('.page .vnav').getByRole('button').first().click()
+await page.locator('.page-editor.read-only').waitFor()
+check('one step back shows the end of the earlier stretch', (await page.locator('.page-editor input.lp-checkbox').isChecked()) && !(await page.locator('.page-editor').innerText()).includes('After reload'))
 await page.locator('.page .vnav').getByRole('button').first().click()
 await page.locator('.page-editor.read-only').waitFor()
 check('page history steps back to the earlier version, read-only', (await page.locator('.page-editor.read-only .cm-content').getAttribute('contenteditable')) === 'false' && !(await page.locator('.page-editor').innerText()).includes('After reload') && (await page.locator('.page-editor input.lp-checkbox').isDisabled()) && (await page.locator('.page-bar .hint').innerText()) === 'Viewing an earlier version')

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } fro
 import { createPortal } from 'react-dom'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown, markdownKeymap, markdownLanguage } from '@codemirror/lang-markdown'
-import { Annotation, EditorState } from '@codemirror/state'
+import { Annotation, type ChangeSet, EditorState } from '@codemirror/state'
 import { EditorView, keymap, placeholder } from '@codemirror/view'
 import { embedExtension, EmbedHost, embedLines, type EmbedLine, type EmbedSlot } from '../editor/embeds'
 import { livePreview } from '../editor/livePreview'
@@ -16,8 +16,11 @@ interface Props {
   /** The page as stored. A change from outside is taken over only while there are no unsaved edits here. */
   text: string
   readOnly?: boolean
-  /** Called with the whole text after every edit made in this editor. */
-  onChange?: (text: string) => void
+  /**
+   * Called after every change of the document: with the edit's ChangeSet when it was made here,
+   * with null when a text from storage was taken over.
+   */
+  onDocChange?: (text: string, changes: ChangeSet | null) => void
   /** Called with the embeds the text holds, on mount and whenever that set changes. */
   onEmbeds: (embeds: EmbedLine[]) => void
   renderEmbed: (slot: EmbedSlot, api: EmbedApi) => ReactNode
@@ -30,15 +33,15 @@ const external = Annotation.define<boolean>()
  * The page editor: raw Markdown underneath, shown as live preview (see editor/livePreview.ts),
  * with message embeds drawn as cards. Enter is a plain newline, as everywhere else in the app.
  */
-export default function PageEditor({ text, readOnly = false, onChange, onEmbeds, renderEmbed }: Props) {
+export default function PageEditor({ text, readOnly = false, onDocChange, onEmbeds, renderEmbed }: Props) {
   const parent = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const [host] = useState(() => new EmbedHost())
   // What storage last said. While the document still equals it, nothing here is unsaved.
   const stored = useRef(text)
-  const callbacks = useRef({ onChange, onEmbeds })
+  const callbacks = useRef({ onDocChange, onEmbeds })
   useEffect(() => {
-    callbacks.current = { onChange, onEmbeds }
+    callbacks.current = { onDocChange, onEmbeds }
   })
 
   useEffect(() => {
@@ -65,9 +68,8 @@ export default function PageEditor({ text, readOnly = false, onChange, onEmbeds,
           EditorView.updateListener.of((u) => {
             if (!u.docChanged) return
             if (keyOf(u.startState) !== keyOf(u.state)) callbacks.current.onEmbeds(embedLines(u.state, embeds.field))
-            if (u.transactions.some((tr) => tr.docChanged && !tr.annotation(external))) {
-              callbacks.current.onChange?.(u.state.doc.toString())
-            }
+            const own = u.transactions.every((tr) => !tr.annotation(external))
+            callbacks.current.onDocChange?.(u.state.doc.toString(), own ? u.changes : null)
           }),
         ],
       }),
@@ -78,6 +80,7 @@ export default function PageEditor({ text, readOnly = false, onChange, onEmbeds,
       if (line) view.dispatch({ changes: { from: line.from, to: line.to, insert: replacement }, userEvent: 'input' })
     })
     callbacks.current.onEmbeds(embedLines(view.state, embeds.field))
+    callbacks.current.onDocChange?.(view.state.doc.toString(), null)
     return () => {
       viewRef.current = null
       host.setReplacer(null)

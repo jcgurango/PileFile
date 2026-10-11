@@ -58,12 +58,21 @@ export interface AttachmentRow {
   order: number
 }
 
-/** One saved state of a stream's page. The newest by timestamp is the page; all are kept. */
+/**
+ * One saved state of a stream's page. Rows are immutable and form a chain: each one names its
+ * parent and carries either the whole text (a snapshot) or a patch that turns the parent's text
+ * into its own. The page is the newest row whose chain can be read back to a snapshot.
+ */
 export interface PageVersionRow {
   id: string
   streamId: string
-  text: string
   createdAt: number
+  /** Null for the first version of a page. */
+  parentId: string | null
+  /** The full text, for a snapshot. */
+  text?: string
+  /** A CodeMirror ChangeSet as JSON, applied to the parent's text. */
+  patch?: string
 }
 
 export type StreamViewMode = 'page' | 'messages' | 'threaded'

@@ -1,7 +1,8 @@
 import Dexie, { type EntityTable } from 'dexie'
 import { extractTags, parseQuery, type ParsedQuery } from './tags'
 import { kindOf, makeThumbnail } from './attachments'
-import type { Action, ActionBody, StreamViewMode } from '../shared/protocol'
+import { ChangeSet, Text } from '@codemirror/state'
+import type { Action, ActionBody, PageVersionRow, StreamViewMode } from '../shared/protocol'
 
 export type { StreamViewMode }
 
@@ -104,13 +105,8 @@ export interface Version {
   createdAt: number
 }
 
-/** One saved state of a stream's page. The newest is the page; all are kept, as with message text. */
-export interface PageVersion {
-  id: string
-  streamId: string
-  text: string
-  createdAt: number
-}
+/** One saved state of a stream's page: see PageVersionRow. Kept as a chain of snapshots and patches. */
+export type PageVersion = PageVersionRow
 
 /** Which of a stream's views (Page, Messages, Threaded) was open last, on any device. */
 export interface StreamViewChoice {
@@ -182,6 +178,17 @@ class PileFileDB extends Dexie {
       pageVersions: 'id, streamId',
       streamViews: 'streamId',
     })
+    // v12: page versions chain up (parentId, text or patch). Rows written before are snapshots without a parent.
+    this.version(12)
+      .stores({})
+      .upgrade((tx) =>
+        tx
+          .table('pageVersions')
+          .toCollection()
+          .modify((v: PageVersion) => {
+            if (v.parentId === undefined) v.parentId = null
+          }),
+      )
   }
 }
 
@@ -394,47 +401,115 @@ export async function dropStreamExtras(streamId: string): Promise<void> {
 
 // ------------------------------------------------------------------ pages
 
-/** Every saved state of a stream's page, newest first. Index 0 is the page. */
-export function pageVersionsOf(streamId: string): Promise<PageVersion[]> {
-  return db.pageVersions.where('streamId').equals(streamId).reverse().sortBy('createdAt')
+/** A full snapshot is written after this many patches in a row, so reading a page never replays more. */
+export const SNAPSHOT_EVERY = 20
+
+const toText = (s: string) => Text.of(s.split('\n'))
+
+/**
+ * A stream's page versions with their texts worked out. `current` is the newest version whose
+ * chain reaches a snapshot (a row whose parent has not arrived yet cannot be read, and waits).
+ * `chain` is that version's ancestry, newest first: the page's history.
+ */
+export interface Page {
+  versions: PageVersion[]
+  current: PageVersion | null
+  chain: PageVersion[]
+  /** Text of any readable version; null for an orphan. Memoised. */
+  textOf: (id: string) => string | null
+  /** Patches between `id` and the snapshot behind it. */
+  depthOf: (id: string) => number
+}
+
+export function readPage(versions: PageVersion[]): Page {
+  const byId = new Map(versions.map((v) => [v.id, v]))
+  const texts = new Map<string, string | null>()
+  const textOf = (id: string): string | null => {
+    if (texts.has(id)) return texts.get(id)!
+    const v = byId.get(id)
+    let out: string | null = null
+    if (v?.text !== undefined) out = v.text
+    else if (v?.patch !== undefined && v.parentId) {
+      const base = textOf(v.parentId)
+      if (base !== null) {
+        try {
+          out = ChangeSet.fromJSON(JSON.parse(v.patch)).apply(toText(base)).toString()
+        } catch {
+          out = null
+        }
+      }
+    }
+    texts.set(id, out)
+    return out
+  }
+  const depthOf = (id: string): number => {
+    let n = 0
+    for (let v = byId.get(id); v && v.text === undefined && v.parentId; v = byId.get(v.parentId)) n++
+    return n
+  }
+  const sorted = [...versions].sort((a, b) => b.createdAt - a.createdAt)
+  const current = sorted.find((v) => textOf(v.id) !== null) ?? null
+  const chain: PageVersion[] = []
+  const seen = new Set<string>()
+  for (let v = current; v && !seen.has(v.id); v = v.parentId ? (byId.get(v.parentId) ?? null) : null) {
+    seen.add(v.id)
+    chain.push(v)
+  }
+  return { versions, current, chain, textOf, depthOf }
+}
+
+export async function loadPage(streamId: string): Promise<Page> {
+  return readPage(await db.pageVersions.where('streamId').equals(streamId).toArray())
 }
 
 export async function pageText(streamId: string): Promise<string> {
-  return (await pageVersionsOf(streamId))[0]?.text ?? ''
+  const page = await loadPage(streamId)
+  return page.current ? (page.textOf(page.current.id) ?? '') : ''
 }
 
 /** Current page text of each of the given streams; streams without a page are left out. */
 export async function pageTexts(streamIds: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>()
   for (const id of streamIds) {
-    const latest = (await pageVersionsOf(id))[0]
-    if (latest) out.set(id, latest.text)
+    const page = await loadPage(id)
+    if (page.current) out.set(id, page.textOf(page.current.id) ?? '')
   }
   return out
 }
 
-/**
- * The editor's autosave. A burst of typing keeps one version id and rewrites that version, so
- * history gains a step per burst, not per pause; the timestamp moves forward so it stays newest.
- */
-export async function savePage(streamId: string, text: string, versionId: string): Promise<void> {
-  await db.transaction('rw', db.pageVersions, db.outbox, async () => {
-    if (text === (await pageText(streamId))) return
-    const version: PageVersion = { id: versionId, streamId, text, createdAt: Date.now() }
-    await db.pageVersions.put(version)
-    await enqueue({ type: 'page.edit', version })
-  })
+async function addPageVersion(version: PageVersion): Promise<void> {
+  await db.pageVersions.add(version)
+  await enqueue({ type: 'page.edit', version })
 }
 
-/** Changes the page from outside the editor, as a new version. `change` gets the current text, so edits compose. */
+/**
+ * The editor's autosave: a new version on top of `parentId`, the version the editor was showing.
+ * `patch` is the ChangeSet from that text to `text`; it is stored unless a snapshot is due.
+ */
+export async function savePage(streamId: string, parentId: string | null, text: string, patch: ChangeSet): Promise<string> {
+  const id = uid()
+  await db.transaction('rw', db.pageVersions, db.outbox, async () => {
+    const page = await loadPage(streamId)
+    const serialized = JSON.stringify(patch.toJSON())
+    const snapshot =
+      parentId === null ||
+      page.textOf(parentId) === null ||
+      page.depthOf(parentId) + 1 >= SNAPSHOT_EVERY ||
+      serialized.length >= text.length
+    const row: PageVersion = { id, streamId, createdAt: Date.now(), parentId, ...(snapshot ? { text } : { patch: serialized }) }
+    await addPageVersion(row)
+  })
+  return id
+}
+
+/** Changes the page from outside the editor, as a snapshot on top of the current version. `change` gets the current text. */
 export async function editPage(streamId: string, change: (current: string) => string): Promise<void> {
   await db.transaction('rw', db.pageVersions, db.outbox, async () => {
-    const current = await pageText(streamId)
+    const page = await loadPage(streamId)
+    const current = page.current ? (page.textOf(page.current.id) ?? '') : ''
     const text = change(current)
     if (text === current) return
-    const version: PageVersion = { id: uid(), streamId, text, createdAt: Date.now() }
-    await db.pageVersions.add(version)
-    await enqueue({ type: 'page.edit', version })
+    await addPageVersion({ id: uid(), streamId, createdAt: Date.now(), parentId: page.current?.id ?? null, text })
   })
 }
 

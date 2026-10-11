@@ -10,6 +10,7 @@ import type {
   StreamRow,
   SyncResponse,
   VersionRow,
+  PageVersionRow,
   StreamViewMode,
 } from '../../shared/protocol.ts'
 
@@ -68,6 +69,15 @@ const toVersion = (r: Row): VersionRow => ({
   messageId: r.message_id as string,
   text: r.text as string,
   createdAt: r.created_at as number,
+})
+
+const toPageVersion = (r: Row): PageVersionRow => ({
+  id: r.id as string,
+  streamId: r.stream_id as string,
+  createdAt: r.created_at as number,
+  parentId: (r.parent_id as string | null) ?? null,
+  ...(r.text === null ? {} : { text: r.text as string }),
+  ...(r.patch === null ? {} : { patch: r.patch as string }),
 })
 
 const toPin = (r: Row): PinRow => ({
@@ -260,17 +270,12 @@ function applyOne(db: Db, userId: string, a: Action, removed: string[]): ChangeB
 
     // Pages and view choices belong to a stream; both are dropped by clients when the stream is deleted.
     case 'page.edit': {
-      // An upsert: the editor rewrites the version it is typing into, and the newest timestamp wins.
       const v = a.version
-      if (!liveStream(db, userId, v.streamId)) return []
-      const res = db
-        .prepare(
-          `INSERT INTO page_versions (id, user_id, stream_id, text, created_at) VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT (id) DO UPDATE SET text = excluded.text, created_at = excluded.created_at
-           WHERE page_versions.user_id = excluded.user_id AND excluded.created_at >= page_versions.created_at`,
-        )
-        .run(v.id, userId, v.streamId, v.text, v.createdAt)
-      return res.changes ? [{ op: 'page.put', data: v }] : []
+      if (!liveStream(db, userId, v.streamId) || db.prepare('SELECT 1 FROM page_versions WHERE id = ?').get(v.id)) return []
+      db.prepare(
+        'INSERT INTO page_versions (id, user_id, stream_id, created_at, parent_id, text, patch) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(v.id, userId, v.streamId, v.createdAt, v.parentId, v.text ?? null, v.patch ?? null)
+      return [{ op: 'page.put', data: v }]
     }
 
     case 'view.set': {
@@ -319,8 +324,7 @@ function snapshot(db: Db, userId: string): SyncResponse {
   }
   for (const r of db.prepare('SELECT * FROM page_versions WHERE user_id = ?').all(userId) as Row[]) {
     if (!streams.has(r.stream_id as string)) continue
-    const data = { id: r.id as string, streamId: r.stream_id as string, text: r.text as string, createdAt: r.created_at as number }
-    changes.push({ seq, op: 'page.put', data })
+    changes.push({ seq, op: 'page.put', data: toPageVersion(r) })
   }
   for (const r of db.prepare('SELECT * FROM stream_views WHERE user_id = ?').all(userId) as Row[]) {
     if (!streams.has(r.stream_id as string)) continue

@@ -115,6 +115,24 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (user_id, stream_id)
   );
   `,
+  // v3: page versions become a chain of snapshots and patches (text nullable, parent_id, patch).
+  `
+  CREATE TABLE page_versions_v3 (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    stream_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    parent_id TEXT,
+    text TEXT,
+    patch TEXT
+  );
+  INSERT INTO page_versions_v3 (id, user_id, stream_id, created_at, parent_id, text, patch)
+    SELECT id, user_id, stream_id, created_at, NULL, text, NULL FROM page_versions;
+  DROP TABLE page_versions;
+  ALTER TABLE page_versions_v3 RENAME TO page_versions;
+  CREATE INDEX page_versions_user ON page_versions(user_id);
+  CREATE INDEX page_versions_stream ON page_versions(stream_id);
+  `,
 ]
 
 export function openDb(path: string): Db {
