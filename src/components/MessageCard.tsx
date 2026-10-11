@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import {
   deleteMessage,
   editMessage,
+  getFileBlob,
   pinMessage,
   setRead,
   streamPath,
@@ -29,6 +30,7 @@ import {
   Pin as PinIcon,
   PinOff,
   Reply,
+  Share2,
   Trash2,
   Unlink,
   X,
@@ -120,6 +122,24 @@ export default function MessageCard({
       setTimeout(() => setCopied(false), 1500)
     } catch {
       // Clipboard access denied or unavailable: nothing was copied, so say nothing.
+    }
+  }
+
+  // The OS share sheet, where the browser has one (hidden where it has not, such as desktop Firefox).
+  const canShare = typeof navigator.share === 'function'
+  const share = async () => {
+    // Attachment bytes go along as files when the sharer takes them; ones still arriving from the server are left out.
+    const files: File[] = []
+    for (const a of attachments) {
+      const blob = await getFileBlob(a.id)
+      if (blob) files.push(new File([blob], a.name, { type: a.type || blob.type }))
+    }
+    const data: ShareData = { text: message.text }
+    if (files.length && navigator.canShare?.({ files })) data.files = files
+    try {
+      await navigator.share(data)
+    } catch {
+      // Dismissed, or nothing shareable: the sheet said what it had to.
     }
   }
 
@@ -251,6 +271,17 @@ export default function MessageCard({
       hint: copied ? 'Copied' : 'Copy Markdown to clipboard',
       onSelect: () => void copy(),
     },
+    ...(canShare
+      ? [
+          {
+            key: 'share',
+            icon: Share2,
+            label: 'Share',
+            hint: attachments.length ? 'Share text and attachments' : 'Share text',
+            onSelect: () => void share(),
+          },
+        ]
+      : []),
     ...(onDissolve
       ? [
           {

@@ -111,6 +111,28 @@ await page.getByLabel('Edit message').waitFor()
 check('edit mode has no attach button and no remove controls', (await trip.getByRole('button', { name: 'Attach files' }).count()) === 0 && (await trip.locator('.att-remove').count()) === 0)
 await page.getByLabel('Edit message').press('Escape')
 
+// 6b. Share hands the text and the files to the OS share sheet, and is absent where the browser has none
+await page.addInitScript(() => { delete Navigator.prototype.share })
+await page.reload()
+await trip.locator('.att-tile img').nth(2).waitFor()
+await trip.hover()
+check('no Share action in a browser without the share sheet', (await trip.getByRole('button', { name: 'Share' }).count()) === 0 && (await trip.getByRole('button', { name: 'Copy' }).count()) === 1)
+await page.addInitScript(() => {
+  window.__shared = []
+  navigator.canShare = () => true
+  navigator.share = async (data) => { window.__shared.push({ text: data.text, files: (data.files ?? []).map((f) => ({ name: f.name, type: f.type, size: f.size })) }) }
+})
+await page.reload()
+await trip.locator('.att-tile img').nth(2).waitFor()
+await trip.hover(); await page.screenshot({ path: shotPath('v9-share-action.png') }); await trip.getByRole('button', { name: 'Share' }).click()
+await page.waitForFunction(() => window.__shared.length === 1)
+const shared = await page.evaluate(() => window.__shared[0])
+check('Share hands the text and every attachment, as files, to the share sheet', shared.text === 'Trip photos #trip' && shared.files.map((f) => f.name).sort().join(',') === 'blue-photo.png,green-photo.png,red-photo.png' && shared.files.every((f) => f.type === 'image/png' && f.size > 0), JSON.stringify(shared))
+await only.hover(); await only.getByRole('button', { name: 'Share' }).click()
+await page.waitForFunction(() => window.__shared.length === 2)
+const sharedOnly = await page.evaluate(() => window.__shared[1])
+check('an attachment-only message shares its file alone', sharedOnly.text === '' && sharedOnly.files.length === 1 && sharedOnly.files[0].name === 'red-photo.png', JSON.stringify(sharedOnly))
+
 // 7. Deleting a message cleans up its files
 page.once('dialog', (d) => d.accept())
 await only.hover(); await only.getByRole('button', { name: 'Delete' }).click()
