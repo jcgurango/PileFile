@@ -191,6 +191,33 @@ class PileFileDB extends Dexie {
             if (v.parentId === undefined) v.parentId = null
           }),
       )
+    // v13: v12 left every pre-chain version a root of its own, and the merge logic joined them all together.
+    // Drop those merges (and anything built on them) and chain the old rows by time. Same rule as the server's v5.
+    this.version(13)
+      .stores({})
+      .upgrade(async (tx) => {
+        const table = tx.table('pageVersions')
+        const rows = (await table.toArray()) as PageVersion[]
+        const bad = new Set(rows.filter((v) => v.id.startsWith('merge:')).map((v) => v.id))
+        for (let grew = true; grew; ) {
+          grew = false
+          for (const v of rows) {
+            if (!bad.has(v.id) && ((v.parentId && bad.has(v.parentId)) || (v.mergeOf && bad.has(v.mergeOf)))) {
+              bad.add(v.id)
+              grew = true
+            }
+          }
+        }
+        await table.bulkDelete([...bad])
+        const legacy = rows.filter((v) => !bad.has(v.id) && v.parentId === null && v.patch === undefined && !v.mergeOf)
+        legacy.sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))
+        const last = new Map<string, string>()
+        for (const v of legacy) {
+          const parent = last.get(v.streamId)
+          if (parent) await table.update(v.id, { parentId: parent })
+          last.set(v.streamId, v.id)
+        }
+      })
   }
 }
 
@@ -502,7 +529,8 @@ export async function savePage(
       page.textOf(parentId) === null ||
       page.depthOf(parentId) + 1 >= SNAPSHOT_EVERY ||
       serialized.length >= text.length
-    const row: PageVersion = { id, streamId, createdAt: Date.now(), parentId, ...(snapshot ? { text } : { patch: serialized }) }
+    // A snapshot keeps its patch too: merging needs the change, whichever way the text is stored.
+    const row: PageVersion = { id, streamId, createdAt: Date.now(), parentId, patch: serialized, ...(snapshot ? { text } : {}) }
     await addPageVersion(row)
   })
   return id

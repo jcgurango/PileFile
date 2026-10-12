@@ -127,6 +127,10 @@ export function merge(g: Graph, mine: string, theirs: string): Merge {
   const mineText = g.textOf(mine) ?? ''
   const theirsText = g.textOf(theirs) ?? ''
   const ancestor = commonAncestor(g, mine, theirs)
+  if (ancestor === null && mineText === theirsText) {
+    // Two beginnings that say the same thing (one page saved twice before the chain model): nothing to join.
+    return { text: mineText, ontoMine: ChangeSet.empty(mineText.length), ontoTheirs: ChangeSet.empty(theirsText.length) }
+  }
   if (ancestor === null && mineText && theirsText) {
     const text = goesFirst(mine, theirs) ? `${mineText}\n\n${theirsText}` : `${theirsText}\n\n${mineText}`
     return { text, ontoMine: spliceChange(mineText, text), ontoTheirs: spliceChange(theirsText, text) }

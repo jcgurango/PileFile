@@ -137,6 +137,25 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE page_versions ADD COLUMN merge_of TEXT;
   `,
+  // v5: versions written before the chain model were left as parentless roots, one per save, and the
+  // merge logic took every one of them for a page that began separately and joined them all together.
+  // Drop those merges (and anything built on them), then chain the old rows by time, as they were meant.
+  `
+  WITH RECURSIVE bad(id) AS (
+    SELECT id FROM page_versions WHERE id LIKE 'merge:%'
+    UNION
+    SELECT v.id FROM page_versions v JOIN bad ON v.parent_id = bad.id OR v.merge_of = bad.id
+  )
+  DELETE FROM page_versions WHERE id IN (SELECT id FROM bad);
+  UPDATE page_versions SET parent_id = (
+    SELECT p.id FROM page_versions p
+    WHERE p.user_id = page_versions.user_id AND p.stream_id = page_versions.stream_id
+      AND p.patch IS NULL AND p.merge_of IS NULL
+      AND (p.created_at < page_versions.created_at OR (p.created_at = page_versions.created_at AND p.id < page_versions.id))
+    ORDER BY p.created_at DESC, p.id DESC LIMIT 1
+  )
+  WHERE parent_id IS NULL AND patch IS NULL AND merge_of IS NULL;
+  `,
 ]
 
 export function openDb(path: string): Db {
