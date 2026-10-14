@@ -46,7 +46,12 @@ function historySteps(chain: PageVersion[]): PageVersion[] {
   return steps
 }
 
-/** A stream's page: a live Markdown editor with messages set into it, saved as you type and kept as versions. */
+/**
+ * A stream's page: a live Markdown editor with messages set into it, saved as you type and kept as versions.
+ * Mounted with the stream's id as its key: the editor's base lives in refs, and the live query keeps the
+ * previous stream's page for a render, so an instance carried from one stream to another would show the
+ * old text and never reconcile against the new page.
+ */
 export default function PageView({ stream, renderCard, onJumpTo }: Props) {
   const page = useLiveQuery(() => loadPage(stream.id), [stream.id])
   const currentText = page?.current ? (page.textOf(page.current.id) ?? '') : ''

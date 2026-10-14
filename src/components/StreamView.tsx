@@ -538,6 +538,7 @@ export default function StreamView({
         <div className="messages" />
       ) : mode === 'page' && stream ? (
         <PageView
+          key={stream.id}
           stream={stream}
           onJumpTo={jumpTo}
           renderCard={({ message, data, onDissolve, nested }) => card(message, data, { embedded: true, nested, onDissolve })}

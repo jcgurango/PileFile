@@ -234,6 +234,27 @@ check('in All, a filed message knows it is on its stream\'s page', (await card('
 await card('Loose thought').hover()
 check('an unfiled message has no page to be added to', (await card('Loose thought').getByRole('button', { name: /page/i }).count()) === 0 && (await card('Loose thought').getByRole('button', { name: 'Copy' }).count()) === 1)
 
+// Moving between two streams that are both on their Page view shows each one's own page
+await page.getByRole('button', { name: 'New stream' }).click()
+await page.getByLabel('New stream name').fill('Notes'); await page.getByLabel('New stream name').press('Enter')
+await page.getByRole('heading', { name: 'Notes', level: 2 }).waitFor()
+await tab('Page').click()
+await editor.waitFor()
+check('a new stream\'s page starts empty even after another page was open', (await page.locator('.page-editor .cm-placeholder').count()) === 1, await editor.innerText())
+await appendToPage('Notes page')
+const notesText = await pageText()
+await go('Work')
+await page.locator('.page-editor .cm-line', { hasText: 'Plan' }).waitFor({ timeout: 3000 }).catch(() => {})
+check('going to another stream in its Page view shows that stream\'s page', (await editor.innerText()).includes('Plan') && !(await editor.innerText()).includes('Notes page'), (await editor.innerText()).slice(0, 80))
+await go('Notes')
+await page.waitForTimeout(300)
+check('and coming back shows the first one again', (await editor.innerText()).includes('Notes page') && !(await editor.innerText()).includes('Plan'), (await editor.innerText()).slice(0, 80))
+await appendToPage(' and more')
+check('typing there builds on that page, not on the one shown before', (await pageText()) === notesText + ' and more', JSON.stringify(await pageText()))
+await go('Work')
+await page.waitForTimeout(300)
+check('while the other page is untouched', (await editor.innerText()).includes('Plan') && !(await editor.innerText()).includes('Notes page'), (await editor.innerText()).slice(0, 80))
+
 // Narrow screens: tabs and the sheet
 await page.setViewportSize({ width: 390, height: 844 })
 await page.waitForTimeout(300)
