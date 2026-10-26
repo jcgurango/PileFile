@@ -6,6 +6,7 @@ import { Annotation, type ChangeSet, EditorState } from '@codemirror/state'
 import { EditorView, keymap, placeholder } from '@codemirror/view'
 import { embedExtension, EmbedHost, embedLines, type EmbedLine, type EmbedSlot } from '../editor/embeds'
 import { livePreview } from '../editor/livePreview'
+import { clearCompletedChanges, completedTasks } from '../editor/tasks'
 
 export interface EmbedApi {
   /** Swaps the embed's line for other text (dissolve). */
@@ -15,6 +16,8 @@ export interface EmbedApi {
 export interface PageEditorHandle {
   /** Applies changes that came from storage (another device's edits, a merge). Not reported as an edit. */
   apply: (changes: ChangeSet) => void
+  /** Deletes every completed task's line, as an edit of the editor's own (undoable, saved like typing). */
+  clearCompleted: () => void
 }
 
 interface Props {
@@ -29,6 +32,8 @@ interface Props {
   onDocChange?: (text: string, changes: ChangeSet | null) => void
   /** Called with the embeds the text holds, on mount and whenever that set changes. */
   onEmbeds: (embeds: EmbedLine[]) => void
+  /** Called with the number of completed tasks, on mount and whenever it changes. */
+  onTasks?: (completed: number) => void
   renderEmbed: (slot: EmbedSlot, api: EmbedApi) => ReactNode
 }
 
@@ -39,14 +44,14 @@ const external = Annotation.define<boolean>()
  * The page editor: raw Markdown underneath, shown as live preview (see editor/livePreview.ts),
  * with message embeds drawn as cards. Enter is a plain newline, as everywhere else in the app.
  */
-export default function PageEditor({ ref, text, readOnly = false, onDocChange, onEmbeds, renderEmbed }: Props) {
+export default function PageEditor({ ref, text, readOnly = false, onDocChange, onEmbeds, onTasks, renderEmbed }: Props) {
   const parent = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const [host] = useState(() => new EmbedHost())
   const initial = useRef(text)
-  const callbacks = useRef({ onDocChange, onEmbeds })
+  const callbacks = useRef({ onDocChange, onEmbeds, onTasks })
   useEffect(() => {
-    callbacks.current = { onDocChange, onEmbeds }
+    callbacks.current = { onDocChange, onEmbeds, onTasks }
   })
 
   useEffect(() => {
@@ -73,6 +78,8 @@ export default function PageEditor({ ref, text, readOnly = false, onDocChange, o
           EditorView.updateListener.of((u) => {
             if (!u.docChanged) return
             if (keyOf(u.startState) !== keyOf(u.state)) callbacks.current.onEmbeds(embedLines(u.state, embeds.field))
+            const done = completedTasks(u.state)
+            if (done !== completedTasks(u.startState)) callbacks.current.onTasks?.(done)
             const own = u.transactions.every((tr) => !tr.annotation(external))
             callbacks.current.onDocChange?.(u.state.doc.toString(), own ? u.changes : null)
           }),
@@ -85,6 +92,7 @@ export default function PageEditor({ ref, text, readOnly = false, onDocChange, o
       if (line) view.dispatch({ changes: { from: line.from, to: line.to, insert: replacement }, userEvent: 'input' })
     })
     callbacks.current.onEmbeds(embedLines(view.state, embeds.field))
+    callbacks.current.onTasks?.(completedTasks(view.state))
     callbacks.current.onDocChange?.(view.state.doc.toString(), null)
     return () => {
       viewRef.current = null
@@ -97,6 +105,12 @@ export default function PageEditor({ ref, text, readOnly = false, onDocChange, o
     apply: (changes) => {
       const view = viewRef.current
       if (view && changes.length === view.state.doc.length) view.dispatch({ changes, annotations: external.of(true) })
+    },
+    clearCompleted: () => {
+      const view = viewRef.current
+      if (!view || view.state.readOnly) return
+      const changes = clearCompletedChanges(view.state)
+      if (changes.length) view.dispatch({ changes, userEvent: 'delete', scrollIntoView: true })
     },
   }))
 

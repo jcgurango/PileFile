@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ChangeSet } from '@codemirror/state'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { History } from 'lucide-react'
+import { History, ListChecks } from 'lucide-react'
 import { addMergeVersion, loadEmbedded, loadPage, savePage, type Message, type PageVersion, type Stream, type StreamViewData } from '../db'
 import { ancestry, changesBetween, merge, mergeId, onLine, spliceChange, tips } from '../pageMerge'
 import type { EmbedLine, EmbedSlot } from '../editor/embeds'
@@ -60,6 +60,7 @@ export default function PageView({ stream, renderCard, onJumpTo }: Props) {
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [unsaved, setUnsaved] = useState(false)
   const [embeds, setEmbeds] = useState<EmbedLine[]>([])
+  const [completed, setCompleted] = useState(0)
 
   // What the editor shows, and the version it was built on: the parent of the next save.
   const editor = useRef<PageEditorHandle>(null)
@@ -242,6 +243,18 @@ export default function PageView({ stream, renderCard, onJumpTo }: Props) {
         <span className="hint" role="status">
           {old ? 'Viewing an earlier version' : unsaved ? 'Saving…' : page.current ? 'Saved' : 'Page'}
         </span>
+        {!old && completed > 0 && (
+          <IconButton
+            icon={ListChecks}
+            label={`Clear completed · ${completed}`}
+            hint={`Remove ${completed} completed ${completed === 1 ? 'task' : 'tasks'}`}
+            badge={completed}
+            size={18}
+            tip="bottom"
+            align="end"
+            onClick={() => editor.current?.clearCompleted()}
+          />
+        )}
         {earlier > 0 && (
           <IconButton
             icon={History}
@@ -295,6 +308,7 @@ export default function PageView({ stream, renderCard, onJumpTo }: Props) {
           text={base.current.text}
           onDocChange={onDocChange}
           onEmbeds={setEmbeds}
+          onTasks={setCompleted}
           renderEmbed={renderEmbed}
         />
       )}
